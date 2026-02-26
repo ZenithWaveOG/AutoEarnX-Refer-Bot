@@ -1,1 +1,6 @@
-pip install aiogram flask supabase python-dotenv
+aiogram==2.25.1
+Flask==2.3.3
+supabase==1.0.3
+python-dotenv==1.0.0
+requests==2.31.0
+gunicorn==21.2.0

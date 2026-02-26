@@ -88,7 +88,7 @@ def check_join(update, context):
             return
 
     keyboard = [
-        [InlineKeyboardButton("🔐 Verify Now", url=f"https://YOUR-RENDER.onrender.com/verify?user_id={uid}")],
+        [InlineKeyboardButton("🔐 Verify Now", url=f"https://autoearnx-refer-bot.onrender.com/verify?user_id={uid}")],
         [InlineKeyboardButton("✅ Complete Verification", callback_data="done_verify")]
     ]
 

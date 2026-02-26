@@ -256,4 +256,9 @@ def run_bot():
 Thread(target=run_bot).start()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+   import os
+   app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+@app.route("/")
+def home():
+    return "✅ Bot + Web running!"

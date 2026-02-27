@@ -31,14 +31,14 @@ function db($endpoint,$method="GET",$data=null){
     ])),true);
 }
 
-/* ========= VERIFY UI ========= */
+/* ================= VERIFY UI ================= */
 if(isset($_GET["verify"])){
 $id=$_GET["verify"];
 ?>
 <!DOCTYPE html>
 <html>
 <head>
-<title>Verify</title>
+<title>Verification</title>
 <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gradient-to-r from-indigo-600 to-purple-600 min-h-screen flex justify-center items-center">
@@ -66,7 +66,7 @@ echo "verified";
 exit;
 }
 
-/* ========= BOT ========= */
+/* ================= BOT ================= */
 
 $message=$update["message"]??null;
 $callback=$update["callback_query"]??null;
@@ -123,10 +123,10 @@ apiRequest("sendMessage",[
 
 if($callback["data"]=="complete"){
 $user=db("users?id=eq.$chat_id")[0];
+$isAdmin=in_array($chat_id,$GLOBALS["ADMIN_IDS"]);
 if(!$user["verified"]){
 apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"❌ Verification not completed"]);
 }else{
-$isAdmin=in_array($chat_id,$GLOBALS["ADMIN_IDS"]);
 userMenu($chat_id,$isAdmin);
 }
 }
@@ -135,8 +135,55 @@ userMenu($chat_id,$isAdmin);
 /* ========= MESSAGE ========= */
 if($message){
 $chat_id=$message["chat"]["id"];
-$text=$message["text"]??"";
+$text=trim($message["text"]??"");
 $isAdmin=in_array($chat_id,$ADMIN_IDS);
+
+/* ===== STATE HANDLER FIRST ===== */
+$state=db("state?id=eq.$chat_id");
+if($state){
+$action=$state[0]["action"];
+
+if($action=="addcoupon"){
+$lines=explode("\n",$text);
+foreach($lines as $c){
+$c=trim($c);
+if($c!=""){ db("coupons","POST",["code"=>$c]); }
+}
+apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"✅ Coupons added successfully"]);
+}
+
+if($action=="removecoupon"){
+$num=intval($text);
+$coupons=db("coupons?limit=$num");
+foreach($coupons as $c){
+db("coupons?id=eq.".$c["id"],"DELETE");
+}
+apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"✅ Removed $num coupons"]);
+}
+
+if($action=="addchannel"){
+db("channels","POST",["invite_link"=>$text]);
+apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"✅ Channel added successfully"]);
+}
+
+if($action=="removechannel"){
+file_get_contents("$SUPABASE_URL/rest/v1/channels?invite_link=eq.$text", false, stream_context_create([
+"http"=>["method"=>"DELETE","header"=>"apikey: $SUPABASE_KEY\r\nAuthorization: Bearer $SUPABASE_KEY"]
+]));
+apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"✅ Channel removed successfully"]);
+}
+
+if($action=="setpoints"){
+db("settings?id=eq.1","PATCH",["withdraw_points"=>intval($text)]);
+apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"✅ Withdraw points updated"]);
+}
+
+file_get_contents("$SUPABASE_URL/rest/v1/state?id=eq.$chat_id", false, stream_context_create([
+"http"=>["method"=>"DELETE","header"=>"apikey: $SUPABASE_KEY\r\nAuthorization: Bearer $SUPABASE_KEY"]
+]));
+
+exit;
+}
 
 /* START */
 if(strpos($text,"/start")===0){
@@ -170,8 +217,8 @@ apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"🔗 Your link:\n$link"])
 }
 
 if($text=="📦 Stock"){
-$count=db("coupons");
-apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"📦 Coupons in stock: ".count($count)]);
+$coupons=db("coupons");
+apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"📦 Coupons in stock: ".count($coupons)]);
 }
 
 if($text=="💸 Withdraw"){
@@ -196,100 +243,48 @@ apiRequest("sendMessage",["chat_id"=>$a,"text"=>"User $chat_id redeemed $code"])
 }
 }
 
-/* ADMIN PANEL */
+/* ADMIN MENU */
 if($isAdmin && $text=="⚙️ Admin Panel"){ adminMenu($chat_id); }
 if($isAdmin && $text=="⬅ Back to User Menu"){ userMenu($chat_id,true); }
 
 if($isAdmin && $text=="➕ Add Coupon"){
-    db("state?id=eq.$chat_id","DELETE");
-    db("state","POST",["id"=>$chat_id,"action"=>"addcoupon"]);
-    apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"Send coupon codes (one per line)"]);
+db("state?id=eq.$chat_id","DELETE");
+db("state","POST",["id"=>$chat_id,"action"=>"addcoupon"]);
+apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"Send coupon codes (one per line)"]);
 }
 
 if($isAdmin && $text=="➖ Remove Coupon"){
-    db("state?id=eq.$chat_id","DELETE");
-    db("state","POST",["id"=>$chat_id,"action"=>"removecoupon"]);
-    apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"Send number of coupons to remove"]);
+db("state?id=eq.$chat_id","DELETE");
+db("state","POST",["id"=>$chat_id,"action"=>"removecoupon"]);
+apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"Send number of coupons to remove"]);
 }
 
 if($isAdmin && $text=="➕ Add Channel"){
-    db("state?id=eq.$chat_id","DELETE");
-    db("state","POST",["id"=>$chat_id,"action"=>"addchannel"]);
-    apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"Send channel link"]);
+db("state?id=eq.$chat_id","DELETE");
+db("state","POST",["id"=>$chat_id,"action"=>"addchannel"]);
+apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"Send channel link"]);
 }
 
 if($isAdmin && $text=="➖ Remove Channel"){
-    db("state?id=eq.$chat_id","DELETE");
-    db("state","POST",["id"=>$chat_id,"action"=>"removechannel"]);
-    apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"Send channel link to remove"]);
+db("state?id=eq.$chat_id","DELETE");
+db("state","POST",["id"=>$chat_id,"action"=>"removechannel"]);
+apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"Send channel link to remove"]);
 }
 
 if($isAdmin && $text=="✏ Set Withdraw Points"){
-    db("state?id=eq.$chat_id","DELETE");
-    db("state","POST",["id"=>$chat_id,"action"=>"setpoints"]);
-    apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"Send new withdraw points"]);
+db("state?id=eq.$chat_id","DELETE");
+db("state","POST",["id"=>$chat_id,"action"=>"setpoints"]);
+apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"Send new withdraw points"]);
 }
 
 if($isAdmin && $text=="📜 Redeem Logs"){
 $logs=db("redeems?order=created_at.desc&limit=10");
 $msg="📜 Last 10 redeems:\n";
-foreach($logs as $l){$msg.="User ".$l["user_id"]." - ".$l["coupon"]."\n";}
+foreach($logs as $l){
+$msg.="User ".$l["user_id"]." - ".$l["coupon"]."\n";
+}
 apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>$msg]);
 }
-
-/* ===== STATE HANDLER (RUN FIRST) ===== */
-$state = db("state?id=eq.$chat_id");
-
-if($state){
-    $action = $state[0]["action"];
-
-    if($action=="addcoupon"){
-        $lines = explode("\n",$text);
-        foreach($lines as $c){
-            $c = trim($c);
-            if($c!=""){
-                db("coupons","POST",["code"=>$c]);
-            }
-        }
-        apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"✅ Coupons added successfully"]);
-    }
-
-    if($action=="removecoupon"){
-        $num = intval($text);
-        $coupons = db("coupons?limit=$num");
-        foreach($coupons as $c){
-            db("coupons?id=eq.".$c["id"],"DELETE");
-        }
-        apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"✅ Removed $num coupons"]);
-    }
-
-    if($action=="addchannel"){
-        db("channels","POST",["invite_link"=>$text]);
-        apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"✅ Channel added successfully"]);
-    }
-
-    if($action=="removechannel"){
-        file_get_contents("$SUPABASE_URL/rest/v1/channels?invite_link=eq.$text", false, stream_context_create([
-            "http"=>[
-                "method"=>"DELETE",
-                "header"=>"apikey: $SUPABASE_KEY\r\nAuthorization: Bearer $SUPABASE_KEY"
-            ]
-        ]));
-        apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"✅ Channel removed successfully"]);
-    }
-
-    if($action=="setpoints"){
-        db("settings?id=eq.1","PATCH",["withdraw_points"=>intval($text)]);
-        apiRequest("sendMessage",["chat_id"=>$chat_id,"text"=>"✅ Withdraw points updated"]);
-    }
-
-    // DELETE STATE AFTER ACTION
-    file_get_contents("$SUPABASE_URL/rest/v1/state?id=eq.$chat_id", false, stream_context_create([
-        "http"=>[
-            "method"=>"DELETE",
-            "header"=>"apikey: $SUPABASE_KEY\r\nAuthorization: Bearer $SUPABASE_KEY"
-        ]
-    ]));
-
-    exit; // VERY IMPORTANT
 }
+
+?>

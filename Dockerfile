@@ -1,12 +1,13 @@
-# Dockerfile for Render PHP deployment
+# FIXED Dockerfile - No PostgreSQL needed
 FROM php:8.3-apache
 
-# Install dependencies
+# Install ONLY required dependencies
 RUN apt-get update && apt-get install -y \
     libcurl4-openssl-dev \
     libzip-dev \
     unzip \
-    && docker-php-ext-install curl pdo pdo_pgsql \
+    && docker-php-ext-install curl \
+    && docker-php-ext-install pdo_zip \
     && a2enmod rewrite
 
 # Enable Apache modules
@@ -21,7 +22,7 @@ RUN chown -R www-data:www-data /var/www/html \
     && chmod -R 755 /var/www/html
 
 # Apache config for webhook
-RUN echo '<VirtualHost *:80>' > /etc/apache2/sites-available/000-default.conf \
+RUN echo '<VirtualHost *:10000>' > /etc/apache2/sites-available/000-default.conf \
     && echo '    DocumentRoot /var/www/html' >> /etc/apache2/sites-available/000-default.conf \
     && echo '    <Directory /var/www/html>' >> /etc/apache2/sites-available/000-default.conf \
     && echo '        AllowOverride All' >> /etc/apache2/sites-available/000-default.conf \
@@ -29,7 +30,7 @@ RUN echo '<VirtualHost *:80>' > /etc/apache2/sites-available/000-default.conf \
     && echo '    </Directory>' >> /etc/apache2/sites-available/000-default.conf \
     && echo '</VirtualHost>' >> /etc/apache2/sites-available/000-default.conf
 
-# Expose port
+# Expose Render port
 EXPOSE 10000
 
 # Health check

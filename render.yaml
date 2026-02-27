@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: telegram-referral-bot
+    env: docker
+    plan: free
+    startCommand: php -S 0.0.0.0:10000 bot.php

@@ -289,35 +289,41 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle data received from mini app."""
-    data = json.loads(update.effective_message.web_app_data.data)
-    if data.get("action") == "verify":
-        user = update.effective_user
-        db_user = await get_user(user.id)
-        if not db_user:
-            await create_user(user.id, None, user.username or "", user.first_name or "")
+    try:
+        # Immediately acknowledge receipt
+        await update.message.reply_text("🔄 Processing verification...")
+
+        data = json.loads(update.effective_message.web_app_data.data)
+        if data.get("action") == "verify":
+            user = update.effective_user
             db_user = await get_user(user.id)
+            if not db_user:
+                await create_user(user.id, None, user.username or "", user.first_name or "")
+                db_user = await get_user(user.id)
 
-        if db_user["is_verified"]:
-            await update.message.reply_text("You are already verified.", reply_markup=user_menu_keyboard(db_user["is_admin"]))
-            return
+            if db_user["is_verified"]:
+                await update.message.reply_text("You are already verified.", reply_markup=user_menu_keyboard(db_user["is_admin"]))
+                return
 
-        # Mark verified and credit referrer if any
-        referrer_id = db_user.get("referred_by")
-        credited_referrer = await mark_user_verified(user.id, referrer_id)
-        if credited_referrer:
-            # Send notification to referrer
-            try:
-                await context.bot.send_message(
-                    credited_referrer,
-                    "🎉 Referral Bonus!\n💰 Earned +1 pt(s)\n✅ Full reward credited!\n⚠️ Note: If this user leaves any channel, your point will be deducted automatically."
-                )
-            except Exception as e:
-                logger.warning(f"Failed to notify referrer {credited_referrer}: {e}")
+            # Mark verified and credit referrer if any
+            referrer_id = db_user.get("referred_by")
+            credited_referrer = await mark_user_verified(user.id, referrer_id)
+            if credited_referrer:
+                try:
+                    await context.bot.send_message(
+                        credited_referrer,
+                        "🎉 Referral Bonus!\n💰 Earned +1 pt(s)\n✅ Full reward credited!\n⚠️ Note: If this user leaves any channel, your point will be deducted automatically."
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to notify referrer {credited_referrer}: {e}")
 
-        await update.message.reply_text(
-            "✅ You are verified! Welcome to the bot.",
-            reply_markup=user_menu_keyboard(db_user["is_admin"] or user.id in ADMIN_IDS)
-        )
+            await update.message.reply_text(
+                "✅ You are verified! Welcome to the bot.",
+                reply_markup=user_menu_keyboard(db_user["is_admin"] or user.id in ADMIN_IDS)
+            )
+    except Exception as e:
+        logger.error(f"Error in web_app_data: {e}", exc_info=True)
+        await update.message.reply_text("❌ Verification failed. Please try again or contact support.")
 
 async def show_main_menu(update: Update, db_user: Dict):
     """Send main menu to user."""

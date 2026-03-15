@@ -1,0 +1,8 @@
+BOT_TOKEN="8749953303:AAF9X6jIEh7sm5DZKj5piOlOvpCwlQXpeQA"
+
+WEBHOOK_URL="https://yourapp.onrender.com"
+
+ADMINS=[8537079657,5351543874]
+
+SUPABASE_URL="https://gayvtqrtmwgsoicxreok.supabase.co"
+SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdheXZ0cXJ0bXdnc29pY3hyZW9rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MzYwMDU0NSwiZXhwIjoyMDg5MTc2NTQ1fQ.n0W4jag3XM0yEM2T9WPOTxtvtS81zhN_Zsch2aTuN3k"

@@ -6,8 +6,8 @@ import string
 from datetime import datetime
 from typing import Dict, Tuple, Optional, List
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ChatMember
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ChatMemberHandler
 from telegram.constants import ParseMode
 import httpx
 from supabase import create_client, Client
@@ -66,11 +66,20 @@ def set_withdraw_points(points: int):
     supabase.table("admin_settings").upsert({"key": "withdraw_points", "value": str(points)}).execute()
 
 async def require_verified(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if user is verified AND still in all channels."""
     user_id = update.effective_user.id
-    if await is_user_verified(user_id):
+    if user_id in ADMIN_IDS:
         return True
-    await update.message.reply_text("❌ You need to verify first. Use /start to begin.")
-    return False
+    # First check verified status
+    user = supabase.table("users").select("verified").eq("user_id", user_id).execute()
+    if not (user.data and user.data[0].get("verified", False)):
+        await update.message.reply_text("❌ You need to verify first. Use /start to begin.")
+        return False
+    # Then check channel membership
+    if not await is_user_joined_channels(user_id, context):
+        await show_force_join_message(update, context)
+        return False
+    return True
 
 # ================= FORCE JOIN HANDLERS =================
 async def show_force_join_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -80,7 +89,6 @@ async def show_force_join_message(update: Update, context: ContextTypes.DEFAULT_
     for ch in channels.data:
         link = ch["channel_link"]
         text += f"• {link}\n"
-        # Add a button for each channel to open it
         keyboard.append([InlineKeyboardButton("🔗 Join Channel", url=link)])
     text += "\nAfter joining all, click the button below."
     keyboard.append([InlineKeyboardButton("✅ I have joined all", callback_data="joined_all")])
@@ -137,10 +145,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }).execute()
         logger.info(f"New user {user_id} created")
 
-    if await is_user_verified(user_id):
+    # If already verified and in channels, show menu
+    if await is_user_verified(user_id) and await is_user_joined_channels(user_id, context):
         await show_main_menu(update, context)
         return
 
+    # If not verified but in channels, show verify button
     if await is_user_joined_channels(user_id, context):
         url = f"{VERIFY_SITE_URL.rstrip('/')}?user_id={user_id}"
         keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=url)]]
@@ -315,7 +325,7 @@ async def deduct_referral_bonus(referrer_id: int, referred_id: int, bot):
     try:
         await bot.send_message(
             chat_id=referrer_id,
-            text="<b>🎉 Referral Leaved Channels!</b>\n\n💰 Earned -1 pt(s)\n✅ Full reward deducted!\n\n⚠️ Note: If this user leaves any channel, your point will be deducted automatically.",
+            text="<b>⚠️ Referral Leaved Channels!</b>\n\n💰 Lost -1 pt(s)\n❌ Reward deducted!\n\n⚠️ Note: A referred user has left a required channel.",
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
@@ -475,6 +485,54 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"✅ Withdraw points updated to {points}.")
         context.user_data.pop("awaiting_withdraw_points")
         return
+
+# ================= CHAT MEMBER HANDLER (track leaves) =================
+async def track_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle chat member updates to detect when users leave force‑join channels."""
+    chat_member = update.chat_member
+    if not chat_member:
+        return
+
+    # Only care about channels where the bot is admin
+    chat_id = chat_member.chat.id
+    chat_username = chat_member.chat.username
+    if not chat_username:
+        # For private channels, we need to store chat_id maybe, but we only have links.
+        # We'll rely on username if available, otherwise skip (or store chat_id mapping)
+        # For simplicity, we'll only handle public channels with username.
+        return
+
+    # Check if this chat is one of our force-join channels
+    channels = supabase.table("channels").select("channel_link").execute()
+    channel_usernames = []
+    for ch in channels.data:
+        link = ch["channel_link"]
+        uname = link.split("/")[-1]
+        channel_usernames.append(uname)
+
+    if chat_username not in channel_usernames:
+        return  # not one of our channels
+
+    # Get user who left
+    user = chat_member.new_chat_member.user
+    user_id = user.id
+    old_status = chat_member.old_chat_member.status
+    new_status = chat_member.new_chat_member.status
+
+    # Detect leave: from member to left/kicked
+    if old_status in ["member", "administrator", "creator"] and new_status in ["left", "kicked"]:
+        logger.info(f"User {user_id} left channel @{chat_username}")
+
+        # Check if this user has a referrer
+        user_data = supabase.table("users").select("referred_by").eq("user_id", user_id).execute().data
+        if not user_data or not user_data[0].get("referred_by"):
+            return
+
+        referrer_id = user_data[0]["referred_by"]
+        logger.info(f"Deducting 1 point from referrer {referrer_id} because referred user {user_id} left channel")
+        await deduct_referral_bonus(referrer_id, user_id, context.bot)
+
+    # Note: We do not handle join events here because points are only given at verification time.
 
 # ================= VERIFICATION PAGE (SELF-HOSTED) =================
 async def verification_page(request):
@@ -690,6 +748,7 @@ async def verification_handler(request):
 async def run_bot():
     application = Application.builder().token(TOKEN).build()
 
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(joined_all_callback, pattern="joined_all"))
     application.add_handler(CallbackQueryHandler(agree_withdraw_callback, pattern="agree_withdraw"))
@@ -708,6 +767,8 @@ async def run_bot():
     application.add_handler(MessageHandler(filters.Regex("^🎟️ GET A FREE CODE$"), get_free_code))
     application.add_handler(MessageHandler(filters.Regex("^💰 CHANGE WITHDRAW POINTS$"), change_withdraw_points))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))
+    # Chat member handler to detect when users leave channels
+    application.add_handler(ChatMemberHandler(track_channel_membership, ChatMemberHandler.CHAT_MEMBER))
 
     app = web.Application()
     app['bot'] = application.bot
@@ -732,7 +793,7 @@ async def run_bot():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
     await site.start()
-    print("Bot started with webhook, verification page at /v, and endpoint at /verify")
+    print("Bot started with webhook, verification page at /v, endpoint at /verify, and leave tracking enabled")
 
     while True:
         await asyncio.sleep(3600)

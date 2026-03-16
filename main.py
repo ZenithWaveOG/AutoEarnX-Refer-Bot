@@ -229,15 +229,6 @@ async def webhook():
     await application.process_update(update)
     return "ok"
 
-@app.route(f"/{BOT_TOKEN}",methods=["POST"])
-async def webhook():
-
-    update=Update.de_json(request.get_json(),application.bot)
-
-    await application.process_update(update)
-
-    return "ok"
-
 @app.route("/")
 def home():
     return "Bot running"

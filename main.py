@@ -191,7 +191,7 @@ async def verify_start_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     # Change this URL to your hosted HTML file
-    web_app_url = "https://your-domain.com/static/verify.html"
+    web_app_url = "https://refer-bot-verify.vercel.app"
     keyboard = [[InlineKeyboardButton("🔐 VERIFY NOW", web_app=WebAppInfo(url=web_app_url))]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text("Click below to verify with our secure mini app:", reply_markup=reply_markup)

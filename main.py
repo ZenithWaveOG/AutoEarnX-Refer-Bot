@@ -445,34 +445,45 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ================= VERIFICATION CALLBACK =================
 async def verification_handler(request):
     print("=== /verify called ===")
+    
+    # CORS preflight
+    if request.method == 'OPTIONS':
+        return web.Response(status=200, headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+        })
+
+    if request.method != 'POST':
+        return web.json_response({"status": "error", "message": "Method not allowed"}, status=405,
+                                 headers={'Access-Control-Allow-Origin': '*'})
+
+    # Read raw body for debugging
     try:
-        # CORS preflight
-        if request.method == 'OPTIONS':
-            return web.Response(status=200, headers={
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'POST, OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type',
-            })
+        text_body = await request.text()
+        print(f"Raw body: {text_body}")
+    except Exception as e:
+        print(f"Could not read body: {e}")
+        text_body = "<unreadable>"
 
-        if request.method != 'POST':
-            return web.json_response({"status": "error", "message": "Method not allowed"}, status=405,
-                                     headers={'Access-Control-Allow-Origin': '*'})
+    # Try to parse JSON
+    try:
+        data = await request.json()
+        print(f"Parsed JSON: {data}")
+    except Exception as e:
+        print(f"JSON parse error: {e}")
+        # Return raw body in error for debugging (remove in production)
+        return web.json_response(
+            {"status": "error", "message": f"Invalid JSON. Raw body: {text_body}"},
+            status=400,
+            headers={'Access-Control-Allow-Origin': '*'}
+        )
 
-        # Parse JSON
-        try:
-            data = await request.json()
-            print("Received data:", data)
-        except Exception as e:
-            print("JSON parse error:", e)
-            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400,
-                                     headers={'Access-Control-Allow-Origin': '*'})
-
-        user_id = data.get("user_id")
-        device_id = data.get("device_id")
-        if not user_id or not device_id:
-            print("Missing user_id or device_id")
-            return web.json_response({"status": "error", "message": "Missing data"}, status=400,
-                                     headers={'Access-Control-Allow-Origin': '*'})
+    user_id = data.get("user_id")
+    device_id = data.get("device_id")
+    if not user_id or not device_id:
+        return web.json_response({"status": "error", "message": "Missing data"}, status=400,
+                                 headers={'Access-Control-Allow-Origin': '*'})
 
         # Check device
         try:

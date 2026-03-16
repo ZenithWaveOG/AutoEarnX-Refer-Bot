@@ -190,7 +190,7 @@ async def verify_start_callback(update: Update, context: ContextTypes.DEFAULT_TY
     """Send WebApp button to user."""
     query = update.callback_query
     await query.answer()
-    # Change this URL to your hosted HTML file
+    # Use your exact Vercel URL
     web_app_url = "https://refer-bot-verify.vercel.app"
     keyboard = [[InlineKeyboardButton("🔐 VERIFY NOW", web_app=WebAppInfo(url=web_app_url))]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -212,12 +212,6 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         existing = supabase.table("users").select("user_id").eq("device_fingerprint", hashed_fp).execute()
         if existing.data:
             await update.message.reply_text("❌ Authorization Declined: This device is already linked to another account.")
-            return
-        # Check if user already has a fingerprint (shouldn't happen)
-        user = await get_user(user_id)
-        if user and user.get('device_fingerprint'):
-            await update.message.reply_text("You are already verified.")
-            await show_main_menu(update.message, context)
             return
         # Update user with fingerprint and mark verified
         supabase.table("users").update({

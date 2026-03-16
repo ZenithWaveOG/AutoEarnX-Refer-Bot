@@ -1,6 +1,9 @@
 import os
 import logging
 import asyncio
+import json
+import hashlib
+from telegram import WebAppInfo
 from datetime import datetime
 from uuid import uuid4
 from typing import Dict, List, Optional
@@ -89,7 +92,7 @@ async def create_user(user_id: int, username: str = "", first_name: str = ""):
         "referrals": 0,
         "joined_channels": False,
         "verified": False,
-        "device_id": None
+        "device_fingerprint": None   # ← add this
     }
     supabase.table("users").insert(data).execute()
 
@@ -184,50 +187,60 @@ async def send_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await update.message.reply_text(text, reply_markup=reply_markup)
 
 async def verify_start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send WebApp button to user."""
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
-    device_id = str(uuid4())  # Unique per device? Better use some device fingerprint, but for simplicity we'll use a random UUID stored in user data
-
-    # Check if user already verified with a different device? We'll store device_id in DB.
-    user = await get_user(user_id)
-    if user and user.get('device_id'):
-        # Already verified, maybe show menu
-        await show_main_menu(query.message, context)
-        return
-
-    # For demo, we'll simulate a mini app popup via a new message with inline button that triggers verification
-    # In reality, you'd use Telegram's WebApp, but here we'll simulate with a second button click.
-    keyboard = [[InlineKeyboardButton("VERIFY NOW", callback_data="verify_confirm")]]
+    # Change this URL to your hosted HTML file
+    web_app_url = "https://your-domain.com/static/verify.html"
+    keyboard = [[InlineKeyboardButton("🔐 VERIFY NOW", web_app=WebAppInfo(url=web_app_url))]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("Click the button below to verify:", reply_markup=reply_markup)
+    await query.edit_message_text("Click below to verify with our secure mini app:", reply_markup=reply_markup)
 
-async def verify_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-
-    # Assign a device ID (in production, use a real device fingerprint from WebApp)
-    device_id = str(uuid4())
-    # Check if this device ID already used by another user
-    existing = supabase.table("users").select("*").eq("device_id", device_id).execute()
-    if existing.data:
-        await query.edit_message_text("❌ Authorization Declined: This device is already linked to another account.")
-        return
-
-    # Mark user as verified, set device ID
-    supabase.table("users").update({"verified": True, "device_id": device_id}).eq("user_id", user_id).execute()
-
-    # If user was referred, credit points to referrer (only if referred user sees menu? condition: "referral is not counted until user B sees their user menu"
-    # We'll handle that when referred user first opens menu. For now, store referrer ID in user_data.
-    referred_by = context.user_data.get('referred_by')
-    if referred_by:
-        # We'll credit only when referred user opens menu for first time, so we store pending referral
-        context.user_data['pending_referral_credit'] = referred_by
-
-    await query.edit_message_text("✅ You are verified! Redirecting to bot...")
-    # Show main menu
-    await show_main_menu(query.message, context)
+async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive data from WebApp."""
+    data = update.effective_message.web_app_data.data
+    user_id = update.effective_user.id
+    try:
+        payload = json.loads(data)
+        fingerprint = payload.get('fingerprint')
+        if not fingerprint:
+            await update.message.reply_text("Verification failed: missing fingerprint.")
+            return
+        # Hash the fingerprint for privacy
+        hashed_fp = hashlib.sha256(fingerprint.encode()).hexdigest()
+        # Check if this fingerprint is already used
+        existing = supabase.table("users").select("user_id").eq("device_fingerprint", hashed_fp).execute()
+        if existing.data:
+            await update.message.reply_text("❌ Authorization Declined: This device is already linked to another account.")
+            return
+        # Check if user already has a fingerprint (shouldn't happen)
+        user = await get_user(user_id)
+        if user and user.get('device_fingerprint'):
+            await update.message.reply_text("You are already verified.")
+            await show_main_menu(update.message, context)
+            return
+        # Update user with fingerprint and mark verified
+        supabase.table("users").update({
+            "verified": True,
+            "device_fingerprint": hashed_fp,
+            "joined_channels": True
+        }).eq("user_id", user_id).execute()
+        # If referred, credit points
+        if 'pending_referral_credit' in context.user_data:
+            referrer_id = context.user_data.pop('pending_referral_credit')
+            supabase.table("users").update({
+                "points": supabase.raw("points + 1"),
+                "referrals": supabase.raw("referrals + 1")
+            }).eq("user_id", referrer_id).execute()
+            await context.bot.send_message(
+                referrer_id,
+                "🎉 Referral Bonus!\n\n💰 Earned +1 pt(s)\n✅ Full reward credited!\n\n⚠️ Note: If this user leaves any channel, your point will be deducted automatically."
+            )
+        await update.message.reply_text("✅ Verification successful! Redirecting...")
+        await show_main_menu(update.message, context)
+    except Exception as e:
+        logger.error(f"WebApp data error: {e}")
+        await update.message.reply_text("Verification failed. Please try again.")
 
 async def show_main_menu(message, context: ContextTypes.DEFAULT_TYPE):
     user_id = message.chat.id if hasattr(message, 'chat') else message.from_user.id
@@ -597,6 +610,7 @@ def main():
     # Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
+    application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
     application.add_handler(MessageHandler(filters.Regex("^💰 BALANCE$"), balance_handler))
     application.add_handler(MessageHandler(filters.Regex("^🤝 REFER$"), refer_handler))
     application.add_handler(MessageHandler(filters.Regex("^🎁 WITHDRAW$"), withdraw_handler))

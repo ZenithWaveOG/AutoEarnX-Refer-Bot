@@ -217,6 +217,18 @@ application=Application.builder().token(BOT_TOKEN).build()
 application.add_handler(CommandHandler("start",start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text))
 
+from flask import Flask, request
+from telegram import Update
+from telegram.ext import Application
+
+app = Flask(__name__)
+
+@app.route("/webhook", methods=["POST"])
+async def webhook():
+    update = Update.de_json(request.get_json(), application.bot)
+    await application.process_update(update)
+    return "ok"
+
 @app.route(f"/{BOT_TOKEN}",methods=["POST"])
 async def webhook():
 

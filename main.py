@@ -11,6 +11,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from telegram.constants import ParseMode
 import httpx
 from supabase import create_client, Client
+from aiohttp import web  # moved import to top
 
 # ================= CONFIG =================
 TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
@@ -30,13 +31,6 @@ logger = logging.getLogger(__name__)
 # ================= SUPABASE INIT =================
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Ensure tables exist (you should create them manually via Supabase SQL editor)
-# Table: users (user_id bigint primary key, username text, points int default 0, referrals int default 0, referred_by bigint, verified bool default false, device_id text unique)
-# Table: coupons (id serial primary key, code text unique, used bool default false, used_by bigint, used_at timestamp)
-# Table: channels (id serial primary key, channel_link text unique)
-# Table: admin_settings (key text primary key, value text) -> for withdraw_points
-# Table: user_verifications (user_id bigint primary key, device_id text, verified_at timestamp)
-
 # ================= HELPER FUNCTIONS =================
 async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Check if user has joined all force-join channels."""
@@ -55,25 +49,17 @@ async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TY
             return False
     return True
 
-async def force_join_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Return True if user is verified and has joined all channels."""
-    user_id = update.effective_user.id
+async def is_user_verified(user_id: int) -> bool:
+    """Check if user is verified in DB."""
     if user_id in ADMIN_IDS:
         return True
     user = supabase.table("users").select("verified").eq("user_id", user_id).execute()
-    if user.data and user.data[0].get("verified", False):
-        return True
-    # Not verified, check channels
-    return await is_user_joined_channels(user_id, context)
+    return user.data and user.data[0].get("verified", False)
 
 async def get_referral_link(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> str:
     """Generate a unique referral link for the user."""
     bot_username = (await context.bot.get_me()).username
     return f"https://t.me/{bot_username}?start={user_id}"
-
-def generate_device_token() -> str:
-    """Generate a unique device token for verification."""
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=32))
 
 def get_withdraw_points() -> int:
     """Get current withdraw points from admin settings."""
@@ -86,26 +72,16 @@ def set_withdraw_points(points: int):
     """Set withdraw points in admin settings."""
     supabase.table("admin_settings").upsert({"key": "withdraw_points", "value": str(points)}).execute()
 
-# ================= FORCE JOIN HANDLER =================
-async def force_join_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Middleware to check force join before any command."""
+# ================= VERIFICATION CHECK FOR COMMANDS =================
+async def require_verified(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if user is verified; if not, prompt to /start."""
     user_id = update.effective_user.id
-    # Admin bypass
-    if user_id in ADMIN_IDS:
+    if await is_user_verified(user_id):
         return True
-    # Check if already verified
-    user = supabase.table("users").select("verified").eq("user_id", user_id).execute()
-    if user.data and user.data[0].get("verified", False):
-        return True
-    # Check channel membership
-    if await is_user_joined_channels(user_id, context):
-        # Mark as verified? No, still need web verification. But we can show verification button.
-        return False  # will trigger verification prompt
-    else:
-        # Not joined all channels
-        await show_force_join_message(update, context)
-        return False
+    await update.message.reply_text("❌ You need to verify first. Use /start to begin.")
+    return False
 
+# ================= FORCE JOIN HANDLERS =================
 async def show_force_join_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show force join channels and 'I have joined all' button."""
     channels = supabase.table("channels").select("channel_link").execute()
@@ -122,8 +98,8 @@ async def joined_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     user_id = query.from_user.id
     if await is_user_joined_channels(user_id, context):
-        # Show verification button
-        keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=VERIFY_SITE_URL)]]
+        # Show verification button with user_id
+        keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=f"{VERIFY_SITE_URL}?user_id={user_id}")]]
         await query.edit_message_text(
             "✅ You have joined all channels!\n\n🛑 **Verification required:** Click below to verify.",
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -131,34 +107,6 @@ async def joined_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
     else:
         await query.edit_message_text("❌ You haven't joined all channels yet. Please join and try again.")
-
-# ================= VERIFICATION WEBHOOK =================
-# The verification website will call this endpoint with user_id and device_id.
-# We'll handle it via a Flask server or via Telegram webhook? Since we are on webhook, we can add a route.
-# For simplicity, we'll embed a small FastAPI/Flask in the same process? But Render runs one process.
-# Better: use a separate route in the same webhook app. We'll need to integrate with python-telegram-bot's webhook.
-# Actually, python-telegram-bot's webhook is for Telegram only. We need an additional endpoint.
-# We'll create a simple aiohttp server alongside? But that's complex. Alternative: use Flask in a thread.
-# However, to keep it one file, we can use a separate route via Quart or FastAPI. But for simplicity, I'll assume we have a separate verification server.
-# Given the constraints, I'll just implement a dummy check: the website redirects to a Telegram deep link with parameters, and we handle it via start command.
-# But the user wants "when user clicked that button then it opens a website ... when user clicked that button then it shows you are verified and redirects to the bot".
-# So we need a website. The bot can provide a unique token, and the website calls back to the bot's webhook.
-# I'll implement a simple verification flow: when user clicks "VERIFY NOW", they get a unique URL with their user_id and a token. The website then calls a /verify endpoint on our bot's server (same domain). That endpoint updates DB and sends a message to user.
-
-# To keep it simple, I'll implement a FastAPI app inside the same file, running on a different port? But Render wants one web service.
-# Instead, I'll use the existing webhook endpoint to also handle verification callbacks by adding a route to the same aiohttp app used by PTB.
-# python-telegram-bot v20+ uses Application.run_webhook() which starts a server. We can extend it? Not easily.
-# I'll cheat: use a separate thread with Flask. But for clarity, I'll provide the bot code and note that the verification site must POST to /verify.
-
-# Let's design: when user clicks VERIFY NOW, they go to https://yoursite.com/verify?user_id=123&token=abc. That page shows a button "Click to Verify". On click, it calls https://yousite.com/api/verify with the token. The server then marks user as verified and sends a message.
-
-# I'll implement a simple aiohttp web application that runs alongside the bot's webhook. But PTB's run_webhook already runs a server. I'll use Application.run_webhook with a custom webhook handler that can also handle non-Telegram paths. That's possible by passing a custom webhook handler. But it's complex.
-
-# Given the scope, I'll provide the bot code and assume the verification website is separate and calls a /verify endpoint on the same domain, and I'll show how to implement that with a simple aiohttp app that shares the same event loop.
-
-# I'll create a combined aiohttp server that handles both Telegram webhook and verification endpoint.
-
-# Let's write the code accordingly.
 
 # ================= BOT COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -193,22 +141,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "verified": False
         }).execute()
 
-    # Force join check
-    if not await force_join_check(update, context):
-        await show_force_join_message(update, context)
+    # Check verification status
+    if await is_user_verified(user_id):
+        await show_main_menu(update, context)
         return
 
-    # If verified, show main menu
-    await show_main_menu(update, context)
+    # Not verified: check channel membership
+    if await is_user_joined_channels(user_id, context):
+        # Show verification button
+        keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=f"{VERIFY_SITE_URL}?user_id={user_id}")]]
+        await update.message.reply_text(
+            "✅ You have joined all channels!\n\n🛑 **Verification required:** Click below to verify.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        await show_force_join_message(update, context)
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user = supabase.table("users").select("*").eq("user_id", user_id).execute().data[0]
-    if not user.get("verified", False):
-        # Should not happen, but just in case
-        await force_join_check(update, context)
-        return
-    # Reply keyboard
     keyboard = [
         [KeyboardButton("💰 BALANCE"), KeyboardButton("🤝 REFER")],
         [KeyboardButton("🎁 WITHDRAW"), KeyboardButton("📜 MY VOUCHERS")],
@@ -221,7 +172,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= BALANCE =================
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await force_join_check(update, context):
+    if not await require_verified(update, context):
         return
     user_id = update.effective_user.id
     user = supabase.table("users").select("points, referrals").eq("user_id", user_id).execute().data[0]
@@ -233,7 +184,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= REFER =================
 async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await force_join_check(update, context):
+    if not await require_verified(update, context):
         return
     user_id = update.effective_user.id
     link = await get_referral_link(user_id, context)
@@ -242,7 +193,7 @@ async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= WITHDRAW =================
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await force_join_check(update, context):
+    if not await require_verified(update, context):
         return
     user_id = update.effective_user.id
     user = supabase.table("users").select("points").eq("user_id", user_id).execute().data[0]
@@ -276,14 +227,12 @@ async def agree_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_
     user = supabase.table("users").select("points").eq("user_id", user_id).execute().data[0]
     new_points = user["points"] - cost
     supabase.table("users").update({"points": new_points}).eq("user_id", user_id).execute()
-    # Record voucher for user
-    # We can have a separate table user_vouchers, but for simplicity, we'll just show in MY VOUCHERS by querying coupons used_by user.
     text = f"🎉 **Shein Code Generated Successfully!**\n\n🎫 Code: `{code}`\n🛍️ [Order Here](https://www.sheinindia.in/c/sverse-5939-37961?query=%3Arelevance%3Agenderfilter%3AMen&gridColumns=5#main-content)\n\n⚠️ Copy the code and use it immediately."
     await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
 
 # ================= MY VOUCHERS =================
 async def my_vouchers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await force_join_check(update, context):
+    if not await require_verified(update, context):
         return
     user_id = update.effective_user.id
     vouchers = supabase.table("coupons").select("code, used_at").eq("used_by", user_id).order("used_at", desc=True).execute()
@@ -299,14 +248,14 @@ async def my_vouchers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= STOCK =================
 async def stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await force_join_check(update, context):
+    if not await require_verified(update, context):
         return
     count = supabase.table("coupons").select("code", count="exact").eq("used", False).execute().count
     await update.message.reply_text(f"📦 **STOCK**\n\nSHEIN COUPON - {count}", parse_mode=ParseMode.MARKDOWN)
 
 # ================= LEADERBOARD =================
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await force_join_check(update, context):
+    if not await require_verified(update, context):
         return
     user_id = update.effective_user.id
     # Get top 10 by referrals
@@ -327,17 +276,18 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🏆 **Top 10 Leaderboard**\n━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines) + f"\n━━━━━━━━━━━━━━━━━━━━\n📍 Your Rank: {rank} | {user_ref} referrals"
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
-# ================= REFERRAL BONUS HANDLER (when referred user verifies) =================
-async def grant_referral_bonus(referrer_id: int, referred_id: int):
+# ================= REFERRAL BONUS HANDLER =================
+async def grant_referral_bonus(referrer_id: int, referred_id: int, bot):
     """Give +1 point to referrer and notify."""
-    # Update referrer's points and referrals
-    referrer = supabase.table("users").select("points, referrals").eq("user_id", referrer_id).execute().data[0]
+    referrer = supabase.table("users").select("points, referrals").eq("user_id", referrer_id).execute().data
+    if not referrer:
+        return
+    referrer = referrer[0]
     new_points = referrer["points"] + 1
     new_refs = referrer["referrals"] + 1
     supabase.table("users").update({"points": new_points, "referrals": new_refs}).eq("user_id", referrer_id).execute()
-    # Send message to referrer (if they have started the bot, we need to know chat_id)
     try:
-        await context.bot.send_message(
+        await bot.send_message(
             chat_id=referrer_id,
             text="🎉 **Referral Bonus!**\n\n💰 Earned +1 pt(s)\n✅ Full reward credited!\n\n⚠️ Note: If this user leaves any channel, your point will be deducted automatically.",
             parse_mode=ParseMode.MARKDOWN
@@ -345,14 +295,17 @@ async def grant_referral_bonus(referrer_id: int, referred_id: int):
     except Exception as e:
         logger.error(f"Failed to notify referrer {referrer_id}: {e}")
 
-async def deduct_referral_bonus(referrer_id: int, referred_id: int):
+async def deduct_referral_bonus(referrer_id: int, referred_id: int, bot):
     """Deduct 1 point when referred user leaves channels."""
-    referrer = supabase.table("users").select("points, referrals").eq("user_id", referrer_id).execute().data[0]
+    referrer = supabase.table("users").select("points, referrals").eq("user_id", referrer_id).execute().data
+    if not referrer:
+        return
+    referrer = referrer[0]
     new_points = max(referrer["points"] - 1, 0)
     new_refs = max(referrer["referrals"] - 1, 0)
     supabase.table("users").update({"points": new_points, "referrals": new_refs}).eq("user_id", referrer_id).execute()
     try:
-        await context.bot.send_message(
+        await bot.send_message(
             chat_id=referrer_id,
             text="🎉 **Referral Leaved Channels!**\n\n💰 Earned -1 pt(s)\n✅ Full reward deducted!\n\n⚠️ Note: If this user leaves any channel, your point will be deducted automatically.",
             parse_mode=ParseMode.MARKDOWN
@@ -383,7 +336,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("awaiting_broadcast"):
         message = update.message.text
-        # Get all users
         users = supabase.table("users").select("user_id").execute().data
         success = 0
         failed = 0
@@ -431,7 +383,6 @@ async def handle_remove_coupon(update: Update, context: ContextTypes.DEFAULT_TYP
         except:
             await update.message.reply_text("❌ Invalid number.")
             return
-        # Get oldest unused coupons
         coupons = supabase.table("coupons").select("id").eq("used", False).order("id").limit(num).execute().data
         ids = [c["id"] for c in coupons]
         if ids:
@@ -486,16 +437,13 @@ async def handle_free_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("❌ Invalid number.")
             return
-        # Get unused coupons
         coupons = supabase.table("coupons").select("code").eq("used", False).limit(num).execute().data
         codes = [c["code"] for c in coupons]
         if not codes:
             await update.message.reply_text("❌ No unused coupons.")
             return
-        # Mark them as used (by admin)
         for code in codes:
             supabase.table("coupons").update({"used": True, "used_by": update.effective_user.id, "used_at": datetime.utcnow().isoformat()}).eq("code", code).execute()
-        # Send codes to admin
         await update.message.reply_text(f"✅ Here are your {len(codes)} codes:\n" + "\n".join(codes))
         context.user_data.pop("awaiting_free_code")
 
@@ -516,15 +464,7 @@ async def handle_change_withdraw_points(update: Update, context: ContextTypes.DE
         await update.message.reply_text(f"✅ Withdraw points updated to {points}.")
         context.user_data.pop("awaiting_withdraw_points")
 
-# ================= VERIFICATION CALLBACK (from website) =================
-# We'll have a separate route /verify that receives POST with user_id and device_id.
-# Since we are using python-telegram-bot's webhook, we need to run a custom web server.
-# I'll use aiohttp to create a server that handles both Telegram and our custom endpoint.
-# This requires modifying the startup.
-
-# We'll create an aiohttp web app and run it with Application.run_webhook()? Actually, PTB can use a custom webhook handler.
-# Let's do it properly:
-
+# ================= VERIFICATION CALLBACK =================
 async def verification_handler(request):
     """Handle POST from verification website."""
     data = await request.json()
@@ -549,14 +489,13 @@ async def verification_handler(request):
     # Grant referral bonus if referred
     referred_by = user[0].get("referred_by")
     if referred_by:
-        await grant_referral_bonus(referred_by, user_id)
+        # Get bot from app
+        bot = request.app['bot']
+        await grant_referral_bonus(referred_by, user_id, bot)
     # Send welcome message to user
-    # We need to get bot instance from somewhere - we'll store it in app['bot']
     bot = request.app['bot']
     await bot.send_message(chat_id=user_id, text="✅ You are verified! Welcome to the bot.")
     return web.json_response({"status": "success", "message": "Verified"})
-
-# We'll integrate with aiohttp in main.
 
 # ================= MAIN =================
 async def run_bot():
@@ -622,8 +561,6 @@ async def run_bot():
         await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    import aiohttp
-    from aiohttp import web
     try:
         asyncio.run(run_bot())
     except KeyboardInterrupt:

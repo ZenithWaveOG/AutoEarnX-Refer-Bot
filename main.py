@@ -92,10 +92,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not existing:
         await create_user(user_id, user.username or "", user.first_name or "")
         if referrer_id and referrer_id != user_id:
-            # Store referrer in database
             supabase.table("users").update({"referred_by": referrer_id}).eq("user_id", user_id).execute()
 
-    # Force join check
     channels = await get_channels()
     if channels:
         keyboard = []
@@ -106,7 +104,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("Please join all channels below to access the bot:", reply_markup=reply_markup)
     else:
-        # No force join, go directly to verification
         await send_verification(update, context)
 
 async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -130,7 +127,6 @@ async def send_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await update.message.reply_text(text, reply_markup=reply_markup)
 
 async def verify_start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send WebApp button to user."""
     query = update.callback_query
     await query.answer()
     web_app_url = "https://refer-bot-verify.vercel.app"  # Your hosted HTML
@@ -139,38 +135,43 @@ async def verify_start_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text("Click below to verify with our secure mini app:", reply_markup=reply_markup)
 
 async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive data from WebApp."""
-    data = update.effective_message.web_app_data.data
-    user_id = update.effective_user.id
-    logger.info(f"WebApp data received from user {user_id}: {data}")
+    logger.info("web_app_data_handler called")
     try:
+        data = update.effective_message.web_app_data.data
+        user_id = update.effective_user.id
+        logger.info(f"Data received: {data}")
+
         payload = json.loads(data)
         fingerprint = payload.get('fingerprint')
         if not fingerprint:
             await update.message.reply_text("Verification failed: missing fingerprint.")
             return
-        # Hash the fingerprint
+
         hashed_fp = hashlib.sha256(fingerprint.encode()).hexdigest()
+
         # Check if fingerprint already used
         existing = supabase.table("users").select("user_id").eq("device_fingerprint", hashed_fp).execute()
         if existing.data:
             await update.message.reply_text("❌ Authorization Declined: This device is already linked to another account.")
             return
-        # Get user
+
         user = await get_user(user_id)
         if not user:
-            await update.message.reply_text("User not found. Please start the bot again.")
+            await update.message.reply_text("User not found. Please /start again.")
             return
+
         if user.get('verified'):
             await update.message.reply_text("You are already verified.")
             await show_main_menu(update.message, context)
             return
+
         # Mark user as verified
         supabase.table("users").update({
             "verified": True,
             "device_fingerprint": hashed_fp,
             "joined_channels": True
         }).eq("user_id", user_id).execute()
+
         # Credit referrer if exists
         if user.get('referred_by'):
             referrer_id = user['referred_by']
@@ -185,10 +186,12 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
             except Exception as e:
                 logger.error(f"Failed to notify referrer {referrer_id}: {e}")
+
         await update.message.reply_text("✅ Verification successful! Redirecting...")
         await show_main_menu(update.message, context)
+
     except Exception as e:
-        logger.error(f"WebApp data error: {e}")
+        logger.error(f"WebApp data error: {e}", exc_info=True)
         await update.message.reply_text("Verification failed. Please try again.")
 
 async def show_main_menu(message, context: ContextTypes.DEFAULT_TYPE):
@@ -197,7 +200,6 @@ async def show_main_menu(message, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         return
 
-    # Reply keyboard menu
     keyboard = [
         [KeyboardButton("💰 BALANCE"), KeyboardButton("🤝 REFER")],
         [KeyboardButton("🎁 WITHDRAW"), KeyboardButton("📜 MY VOUCHERS")],
@@ -492,7 +494,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Handlers
+    # Handlers (order matters: specific first, then general)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
@@ -511,7 +513,9 @@ def main():
     application.add_handler(MessageHandler(filters.Regex("^🎁 GET FREE CODE$"), get_free_code_handler))
     application.add_handler(MessageHandler(filters.Regex("^💰 CHANGE WITHDRAW POINTS$"), change_withdraw_points_handler))
     application.add_handler(MessageHandler(filters.Regex("^🔙 BACK TO MAIN MENU$"), back_to_main))
+    # Admin text input (catch-all for admin actions)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))
+    # Chat member updates
     application.add_handler(ChatMemberHandler(chat_member_handler, ChatMemberHandler.CHAT_MEMBER))
 
     application.add_error_handler(error_handler)

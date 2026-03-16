@@ -550,11 +550,11 @@ async def verification_handler(request):
 # We'll integrate with aiohttp in main.
 
 # ================= MAIN =================
-def main():
+async def run_bot():
     # Initialize bot application
     application = Application.builder().token(TOKEN).build()
 
-    # Handlers
+    # Add all handlers (copy all your handler additions here)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(joined_all_callback, pattern="joined_all"))
     application.add_handler(CallbackQueryHandler(agree_withdraw_callback, pattern="agree_withdraw"))
@@ -565,7 +565,6 @@ def main():
     application.add_handler(MessageHandler(filters.Regex("^📦 STOCK$"), stock))
     application.add_handler(MessageHandler(filters.Regex("^🏆 LEADERBOARD$"), leaderboard))
     application.add_handler(MessageHandler(filters.Regex("^👑 ADMIN PANEL$"), admin_panel))
-    # Admin sub-commands (text-based)
     application.add_handler(MessageHandler(filters.Regex("^📢 BROADCAST$"), broadcast))
     application.add_handler(MessageHandler(filters.Regex("^➕ ADD COUPON$"), add_coupon))
     application.add_handler(MessageHandler(filters.Regex("^➖ REMOVE COUPON$"), remove_coupon))
@@ -582,36 +581,14 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_free_code))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_change_withdraw_points))
 
-    # Set up webhook
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 8080)),
-        url_path=TOKEN,
-        webhook_url=WEBHOOK_URL + "/" + TOKEN
-    )
-
-    # To add the verification endpoint, we need to run a custom web server.
-    # Unfortunately, run_webhook blocks. We can instead create an aiohttp app and run it manually.
-    # Let's rewrite main to use aiohttp with PTB's webhook handler.
-
-    # We'll do it properly:
-
-async def run_bot():
     # Create aiohttp app
     app = web.Application()
-    # Store bot instance
     app['bot'] = application.bot
+
     # Add verification route
     app.router.add_post('/verify', verification_handler)
-    # Set up Telegram webhook handler
-    from telegram.ext import Application
-    # We'll use application.run_webhook but with a custom server? Actually we can't combine easily.
-    # Instead, we'll start the bot polling? But user wants webhook.
-    # Workaround: use a custom webhook handler that dispatches to PTB's webhook.
-    # Let's follow PTB's documentation for custom webhook:
-    # https://docs.python-telegram-bot.org/en/stable/examples.customwebhookbot.html
-    # We'll create a custom view that processes Telegram updates.
 
+    # Telegram webhook route
     async def telegram_webhook(request):
         update = await request.json()
         await application.process_update(Update.de_json(update, application.bot))
@@ -622,12 +599,14 @@ async def run_bot():
     # Start the application
     await application.initialize()
     await application.start()
+
     # Run web server
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
     await site.start()
     print("Bot started with webhook and verification endpoint.")
+
     # Keep running
     while True:
         await asyncio.sleep(3600)

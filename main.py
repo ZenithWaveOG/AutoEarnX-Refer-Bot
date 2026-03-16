@@ -96,7 +96,7 @@ async def force_join_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await show_force_join_message(update, context)
         return False
 
-async def show_force_join_message(update: Update, context: ContextTypes.Dtype):
+async def show_force_join_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show force join channels and 'I have joined all' button."""
     channels = supabase.table("channels").select("channel_link").execute()
     text = "🚨 **Force Join Required**\n\nPlease join the following channels first:\n"

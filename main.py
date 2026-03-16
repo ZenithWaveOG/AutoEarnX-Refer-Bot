@@ -5,7 +5,7 @@ from telegram.ext import *
 from supabase import create_client
 
 BOT_TOKEN="8749953303:AAF9X6jIEh7sm5DZKj5piOlOvpCwlQXpeQA"
-WEBHOOK_URL="https://yourapp.onrender.com"
+WEBHOOK_URL="https://autoearnx-refer-bot.onrender.com"
 
 ADMINS=[8537079657,5351543874]
 

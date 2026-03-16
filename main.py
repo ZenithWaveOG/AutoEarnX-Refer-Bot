@@ -42,10 +42,9 @@ async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TY
     """Check if user has joined all force-join channels."""
     channels = supabase.table("channels").select("channel_link").execute()
     if not channels.data:
-        return True  # no channels to join
+        return True
     for ch in channels.data:
         link = ch["channel_link"]
-        # Extract chat_id or username from link (assume public link like https://t.me/username)
         chat_username = link.split("/")[-1]
         try:
             member = await context.bot.get_chat_member(chat_id=f"@{chat_username}", user_id=user_id)
@@ -55,6 +54,17 @@ async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TY
             logger.error(f"Error checking channel {link}: {e}")
             return False
     return True
+
+async def force_join_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Return True if user is verified and has joined all channels."""
+    user_id = update.effective_user.id
+    if user_id in ADMIN_IDS:
+        return True
+    user = supabase.table("users").select("verified").eq("user_id", user_id).execute()
+    if user.data and user.data[0].get("verified", False):
+        return True
+    # Not verified, check channels
+    return await is_user_joined_channels(user_id, context)
 
 async def get_referral_link(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> str:
     """Generate a unique referral link for the user."""
@@ -155,14 +165,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username or f"user_{user_id}"
     args = context.args
-    # Check if referred
+
+    # Handle referral
     if args and args[0].isdigit():
         referrer_id = int(args[0])
         if referrer_id != user_id:
-            # Check if user already exists
             existing = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
             if not existing.data:
-                # Create user with referrer
                 supabase.table("users").insert({
                     "user_id": user_id,
                     "username": username,
@@ -171,11 +180,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "referred_by": referrer_id,
                     "verified": False
                 }).execute()
-                # Notify referrer later when user verifies
-            else:
-                # Already exists, ignore
-                pass
-    # Check if user exists, if not create
+
+    # Ensure user exists in DB
     existing = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
     if not existing.data:
         supabase.table("users").insert({
@@ -186,9 +192,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "referred_by": None,
             "verified": False
         }).execute()
+
     # Force join check
     if not await force_join_check(update, context):
+        await show_force_join_message(update, context)
         return
+
     # If verified, show main menu
     await show_main_menu(update, context)
 

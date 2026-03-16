@@ -234,6 +234,7 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await show_main_menu(update.message, context)
     except Exception as e:
         logger.error(f"WebApp data error: {e}")
+        logger.info(f"WebApp data received: {update.effective_message.web_app_data.data}")
         await update.message.reply_text("Verification failed. Please try again.")
 
 async def show_main_menu(message, context: ContextTypes.DEFAULT_TYPE):

@@ -56,9 +56,10 @@ async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TY
             return False
     return True
 
-def get_referral_link(user_id: int) -> str:
+async def get_referral_link(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> str:
     """Generate a unique referral link for the user."""
-    return f"https://t.me/{(await context.bot.get_me()).username}?start={user_id}"
+    bot_username = (await context.bot.get_me()).username
+    return f"https://t.me/{bot_username}?start={user_id}"
 
 def generate_device_token() -> str:
     """Generate a unique device token for verification."""
@@ -226,8 +227,7 @@ async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await force_join_check(update, context):
         return
     user_id = update.effective_user.id
-    bot_username = (await context.bot.get_me()).username
-    link = f"https://t.me/{bot_username}?start={user_id}"
+    link = await get_referral_link(user_id, context)
     text = f"🤝 **Refer & Earn**\n\nInvite friends using your link:\n`{link}`\n\n✅ Each verified user gives you +1 point."
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 

@@ -554,7 +554,7 @@ async def run_bot():
     # Initialize bot application
     application = Application.builder().token(TOKEN).build()
 
-    # Add all handlers (copy all your handler additions here)
+    # Add all handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(joined_all_callback, pattern="joined_all"))
     application.add_handler(CallbackQueryHandler(agree_withdraw_callback, pattern="agree_withdraw"))
@@ -589,15 +589,13 @@ async def run_bot():
     app.router.add_post('/verify', verification_handler)
 
     # Telegram webhook route
-    # Telegram webhook route
-async def telegram_webhook(request):
-    update = await request.json()
-    await application.process_update(Update.de_json(update, application.bot))
-    return web.Response(status=200)
+    async def telegram_webhook(request):
+        update = await request.json()
+        await application.process_update(Update.de_json(update, application.bot))
+        return web.Response(status=200)
 
-# Add both /{TOKEN} and /webhook paths
-app.router.add_post(f'/{TOKEN}', telegram_webhook)
-app.router.add_post('/webhook', telegram_webhook)   # <-- add this line
+    app.router.add_post(f'/{TOKEN}', telegram_webhook)
+    app.router.add_post('/webhook', telegram_webhook)  # fallback
 
     # Start the application
     await application.initialize()

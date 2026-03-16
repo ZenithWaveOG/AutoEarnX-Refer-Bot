@@ -19,7 +19,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "YOUR_SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "YOUR_SUPABASE_KEY")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://your-app.onrender.com/webhook")
 ADMIN_IDS = [int(id) for id in os.environ.get("ADMIN_IDS", "123456789,987654321").split(",")]
-VERIFY_SITE_URL = os.environ.get("VERIFY_SITE_URL", "https://your-verification-site.com")
+VERIFY_SITE_URL = os.environ.get("VERIFY_SITE_URL", "/v")  # default to relative path
 
 DEFAULT_WITHDRAW_POINTS = 3
 
@@ -88,7 +88,9 @@ async def joined_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     user_id = query.from_user.id
     if await is_user_joined_channels(user_id, context):
-        keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=f"{VERIFY_SITE_URL}?user_id={user_id}")]]
+        # Use relative path to the self-hosted verification page
+        url = f"/v?user_id={user_id}"
+        keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=url)]]
         await query.edit_message_text(
             "<b>✅ You have joined all channels!</b>\n\n<b>🛑 Verification required:</b> Click below to verify.",
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -133,7 +135,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await is_user_joined_channels(user_id, context):
-        keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=f"{VERIFY_SITE_URL}?user_id={user_id}")]]
+        url = f"/v?user_id={user_id}"
+        keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=url)]]
         await update.message.reply_text(
             "<b>✅ You have joined all channels!</b>\n\n<b>🛑 Verification required:</b> Click below to verify.",
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -442,6 +445,111 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.pop("awaiting_withdraw_points")
         return
 
+# ================= VERIFICATION PAGE (SELF-HOSTED) =================
+async def verification_page(request):
+    """Serve the verification HTML page dynamically."""
+    user_id = request.query.get('user_id', '')
+    bot = request.app.get('bot')
+    bot_username = "YOUR_BOT_USERNAME"  # fallback
+    if bot:
+        try:
+            me = await bot.get_me()
+            bot_username = me.username
+        except:
+            pass
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Verify Your Device</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }}
+        body {{ background: linear-gradient(135deg, #667eea, #764ba2); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
+        .container {{ background: white; border-radius: 20px; padding: 40px; max-width: 500px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; }}
+        h1 {{ color: #333; font-size: 2em; margin-bottom: 20px; }}
+        .btn {{ background: #667eea; color: white; border: none; padding: 15px 40px; border-radius: 50px; cursor: pointer; font-size: 1.2em; margin: 20px 0; width: 100%; }}
+        .btn:disabled {{ opacity: 0.6; cursor: not-allowed; }}
+        .status {{ padding: 15px; border-radius: 10px; margin-top: 20px; display: none; word-break: break-word; }}
+        .success {{ background: #d4edda; color: #155724; display: block; }}
+        .error {{ background: #f8d7da; color: #721c24; display: block; }}
+        .loader {{ border: 4px solid #f3f3f3; border-top: 4px solid #667eea; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; display: none; }}
+        @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 Verify Your Device</h1>
+        <button class="btn" id="verifyBtn">VERIFY NOW</button>
+        <div class="loader" id="loader"></div>
+        <div class="status" id="status"></div>
+        <p style="color:#666;">One device per Telegram account.</p>
+    </div>
+    <script>
+        const BOT_API_URL = '/verify';  // same domain
+        const BOT_USERNAME = '{bot_username}';
+
+        async function getDeviceId() {{
+            const canvas = document.createElement('canvas');
+            canvas.width = 200; canvas.height = 50;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#f60'; ctx.fillRect(10,10,100,30);
+            ctx.fillStyle = '#069'; ctx.fillText('Fingerprint',20,25);
+            const fp = canvas.toDataURL();
+            const data = fp + navigator.userAgent + screen.width + screen.height + Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(data));
+            return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('');
+        }}
+
+        document.getElementById('verifyBtn').addEventListener('click', async () => {{
+            const btn = document.getElementById('verifyBtn');
+            const statusDiv = document.getElementById('status');
+            const loader = document.getElementById('loader');
+            btn.disabled = true;
+            statusDiv.className = 'status';
+            loader.style.display = 'block';
+
+            const userId = '{user_id}';
+            if (!userId) {{
+                statusDiv.className = 'status error';
+                statusDiv.innerText = '❌ Missing user ID.';
+                btn.disabled = false; loader.style.display = 'none';
+                return;
+            }}
+
+            try {{
+                const deviceId = await getDeviceId();
+                const response = await fetch(BOT_API_URL, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ user_id: parseInt(userId), device_id: deviceId }})
+                }});
+                const result = await response.json();
+                if (result.status === 'success') {{
+                    statusDiv.className = 'status success';
+                    statusDiv.innerText = '✅ Verified! Redirecting...';
+                    setTimeout(() => window.location.href = `https://t.me/${{BOT_USERNAME}}`, 2000);
+                }} else {{
+                    statusDiv.className = 'status error';
+                    statusDiv.innerText = '❌ ' + (result.message || 'Verification failed');
+                }}
+            }} catch (err) {{
+                console.error(err);
+                statusDiv.className = 'status error';
+                statusDiv.innerText = '❌ Network error. Check console.';
+            }} finally {{
+                btn.disabled = false;
+                loader.style.display = 'none';
+            }}
+        }});
+    </script>
+</body>
+</html>"""
+    return web.Response(text=html, content_type='text/html')
+
 # ================= VERIFICATION CALLBACK =================
 async def verification_handler(request):
     print("=== /verify called ===")
@@ -472,7 +580,6 @@ async def verification_handler(request):
         print(f"Parsed JSON: {data}")
     except Exception as e:
         print(f"JSON parse error: {e}")
-        # Return raw body in error for debugging (remove in production)
         return web.json_response(
             {"status": "error", "message": f"Invalid JSON. Raw body: {text_body}"},
             status=400,
@@ -573,6 +680,10 @@ async def run_bot():
 
     app = web.Application()
     app['bot'] = application.bot
+
+    # Add self-hosted verification page
+    app.router.add_get('/v', verification_page)
+    # Add verification endpoint
     app.router.add_post('/verify', verification_handler)
 
     async def telegram_webhook(request):
@@ -590,7 +701,7 @@ async def run_bot():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
     await site.start()
-    print("Bot started with webhook and verification endpoint at /verify")
+    print("Bot started with webhook, verification page at /v, and endpoint at /verify")
 
     while True:
         await asyncio.sleep(3600)

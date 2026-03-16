@@ -224,9 +224,9 @@ from telegram.ext import Application
 app = Flask(__name__)
 
 @app.route("/webhook", methods=["POST"])
-async def webhook():
+def webhook():
     update = Update.de_json(request.get_json(), application.bot)
-    await application.process_update(update)
+    application.process_update(update)
     return "ok"
 
 @app.route("/")

@@ -201,46 +201,35 @@ async def verify_start_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text("✅ Verification Successful!")
     await show_main_menu(query.message, context)
 
-async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive data from WebApp."""
-    data = update.effective_message.web_app_data.data
+async def webapp_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     user_id = update.effective_user.id
-    try:
-        payload = json.loads(data)
-        fingerprint = payload.get('fingerprint')
-        if not fingerprint:
-            await update.message.reply_text("Verification failed: missing fingerprint.")
-            return
-        # Hash the fingerprint for privacy
-        hashed_fp = hashlib.sha256(fingerprint.encode()).hexdigest()
-        # Check if this fingerprint is already used
-        existing = supabase.table("users").select("user_id").eq("device_fingerprint", hashed_fp).execute()
-        if existing.data:
-            await update.message.reply_text("❌ Authorization Declined: This device is already linked to another account.")
-            return
-        # Update user with fingerprint and mark verified
-        supabase.table("users").update({
-            "verified": True,
-            "device_fingerprint": hashed_fp,
-            "joined_channels": True
-        }).eq("user_id", user_id).execute()
-        # If referred, credit points
-        if 'pending_referral_credit' in context.user_data:
-            referrer_id = context.user_data.pop('pending_referral_credit')
-            supabase.table("users").update({
-                "points": supabase.raw("points + 1"),
-                "referrals": supabase.raw("referrals + 1")
-            }).eq("user_id", referrer_id).execute()
-            await context.bot.send_message(
-                referrer_id,
-                "🎉 Referral Bonus!\n\n💰 Earned +1 pt(s)\n✅ Full reward credited!\n\n⚠️ Note: If this user leaves any channel, your point will be deducted automatically."
-            )
-        await update.message.reply_text("✅ Verification successful! Redirecting...")
-        await show_main_menu(update.message, context)
-    except Exception as e:
-        logger.error(f"WebApp data error: {e}")
-        logger.info(f"WebApp data received: {update.effective_message.web_app_data.data}")
-        await update.message.reply_text("Verification failed. Please try again.")
+
+    data = update.message.web_app_data.data
+
+    import json
+    payload = json.loads(data)
+
+    fingerprint = payload.get("fingerprint")
+
+    # check if fingerprint already used
+    existing = supabase.table("users").select("*").eq("device_id", fingerprint).execute()
+
+    if existing.data:
+        await update.message.reply_text(
+            "❌ Authorization Declined\n\nThis device is already linked to another account."
+        )
+        return
+
+    # verify user
+    supabase.table("users").update({
+        "verified": True,
+        "device_id": fingerprint
+    }).eq("user_id", user_id).execute()
+
+    await update.message.reply_text("✅ Verification Successful!")
+
+    await show_main_menu(update.message, context)
 
 async def show_main_menu(message, context: ContextTypes.DEFAULT_TYPE):
     user_id = message.chat.id if hasattr(message, 'chat') else message.from_user.id

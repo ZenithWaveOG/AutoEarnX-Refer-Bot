@@ -11,20 +11,18 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from telegram.constants import ParseMode
 import httpx
 from supabase import create_client, Client
-from aiohttp import web  # moved import to top
+from aiohttp import web
 
 # ================= CONFIG =================
 TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "YOUR_SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "YOUR_SUPABASE_KEY")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://your-app.onrender.com/webhook")
-ADMIN_IDS = [int(id) for id in os.environ.get("ADMIN_IDS", "123456789,987654321").split(",")]  # two admins
-VERIFY_SITE_URL = os.environ.get("VERIFY_SITE_URL", "https://your-verification-site.com")  # your high-tech UI site
+ADMIN_IDS = [int(id) for id in os.environ.get("ADMIN_IDS", "123456789,987654321").split(",")]
+VERIFY_SITE_URL = os.environ.get("VERIFY_SITE_URL", "https://your-verification-site.com")  # Must be set!
 
-# Withdraw points default (can be changed via admin panel)
 DEFAULT_WITHDRAW_POINTS = 3
 
-# Logging
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -33,7 +31,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ================= HELPER FUNCTIONS =================
 async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if user has joined all force-join channels."""
     channels = supabase.table("channels").select("channel_link").execute()
     if not channels.data:
         return True
@@ -50,31 +47,25 @@ async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TY
     return True
 
 async def is_user_verified(user_id: int) -> bool:
-    """Check if user is verified in DB."""
     if user_id in ADMIN_IDS:
         return True
     user = supabase.table("users").select("verified").eq("user_id", user_id).execute()
     return user.data and user.data[0].get("verified", False)
 
 async def get_referral_link(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> str:
-    """Generate a unique referral link for the user."""
     bot_username = (await context.bot.get_me()).username
     return f"https://t.me/{bot_username}?start={user_id}"
 
 def get_withdraw_points() -> int:
-    """Get current withdraw points from admin settings."""
     res = supabase.table("admin_settings").select("value").eq("key", "withdraw_points").execute()
     if res.data:
         return int(res.data[0]["value"])
     return DEFAULT_WITHDRAW_POINTS
 
 def set_withdraw_points(points: int):
-    """Set withdraw points in admin settings."""
     supabase.table("admin_settings").upsert({"key": "withdraw_points", "value": str(points)}).execute()
 
-# ================= VERIFICATION CHECK FOR COMMANDS =================
 async def require_verified(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if user is verified; if not, prompt to /start."""
     user_id = update.effective_user.id
     if await is_user_verified(user_id):
         return True
@@ -83,7 +74,6 @@ async def require_verified(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 # ================= FORCE JOIN HANDLERS =================
 async def show_force_join_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show force join channels and 'I have joined all' button."""
     channels = supabase.table("channels").select("channel_link").execute()
     text = "🚨 **Force Join Required**\n\nPlease join the following channels first:\n"
     for ch in channels.data:
@@ -98,7 +88,6 @@ async def joined_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     user_id = query.from_user.id
     if await is_user_joined_channels(user_id, context):
-        # Show verification button with user_id
         keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=f"{VERIFY_SITE_URL}?user_id={user_id}")]]
         await query.edit_message_text(
             "✅ You have joined all channels!\n\n🛑 **Verification required:** Click below to verify.",
@@ -114,7 +103,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or f"user_{user_id}"
     args = context.args
 
-    # Handle referral
     if args and args[0].isdigit():
         referrer_id = int(args[0])
         if referrer_id != user_id:
@@ -129,7 +117,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "verified": False
                 }).execute()
 
-    # Ensure user exists in DB
     existing = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
     if not existing.data:
         supabase.table("users").insert({
@@ -141,14 +128,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "verified": False
         }).execute()
 
-    # Check verification status
     if await is_user_verified(user_id):
         await show_main_menu(update, context)
         return
 
-    # Not verified: check channel membership
     if await is_user_joined_channels(user_id, context):
-        # Show verification button
         keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=f"{VERIFY_SITE_URL}?user_id={user_id}")]]
         await update.message.reply_text(
             "✅ You have joined all channels!\n\n🛑 **Verification required:** Click below to verify.",
@@ -202,7 +186,6 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if points < cost:
         await update.message.reply_text(f"❌ You need {cost} points to withdraw. You have {points}.")
         return
-    # Show terms button
     keyboard = [[InlineKeyboardButton("📜 AGREE AND GET CODE", callback_data="agree_withdraw")]]
     await update.message.reply_text(
         "📜 **Terms & Conditions (Shein):**\n\n1️⃣ This Coupon Will Apply Only On SheinVerse Products.\n\nDo you agree to spend?",
@@ -214,15 +197,12 @@ async def agree_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    # Get a free coupon
     coupon = supabase.table("coupons").select("code").eq("used", False).limit(1).execute()
     if not coupon.data:
         await query.edit_message_text("❌ No coupons available. Contact admin.")
         return
     code = coupon.data[0]["code"]
-    # Mark as used
     supabase.table("coupons").update({"used": True, "used_by": user_id, "used_at": datetime.utcnow().isoformat()}).eq("code", code).execute()
-    # Deduct points
     cost = get_withdraw_points()
     user = supabase.table("users").select("points").eq("user_id", user_id).execute().data[0]
     new_points = user["points"] - cost
@@ -239,9 +219,7 @@ async def my_vouchers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not vouchers.data:
         await update.message.reply_text("📜 **MY VOUCHERS**\n\n━━━━━━━━━━━━━━━━━━━━\nNo vouchers yet.\n━━━━━━━━━━━━━━━━━━━━\n📊 Total: 0")
         return
-    lines = []
-    for v in vouchers.data:
-        lines.append(f"🎫 `{v['code']}`")
+    lines = [f"🎫 `{v['code']}`" for v in vouchers.data]
     total = len(vouchers.data)
     text = "📜 **MY VOUCHERS**\n━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines) + "\n━━━━━━━━━━━━━━━━━━━━\n📊 Total: " + str(total)
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
@@ -258,14 +236,12 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_verified(update, context):
         return
     user_id = update.effective_user.id
-    # Get top 10 by referrals
     top = supabase.table("users").select("username, referrals").order("referrals", desc=True).limit(10).execute().data
     lines = []
     medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     for i, u in enumerate(top):
         name = u["username"] or f"user_{u['user_id']}"
         lines.append(f"{medals[i]} {name}\n     └ {u['referrals']} referrals")
-    # Get user's rank
     all_users = supabase.table("users").select("user_id, referrals").order("referrals", desc=True).execute().data
     rank = 1
     for u in all_users:
@@ -278,7 +254,6 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= REFERRAL BONUS HANDLER =================
 async def grant_referral_bonus(referrer_id: int, referred_id: int, bot):
-    """Give +1 point to referrer and notify."""
     referrer = supabase.table("users").select("points, referrals").eq("user_id", referrer_id).execute().data
     if not referrer:
         return
@@ -296,7 +271,6 @@ async def grant_referral_bonus(referrer_id: int, referred_id: int, bot):
         logger.error(f"Failed to notify referrer {referrer_id}: {e}")
 
 async def deduct_referral_bonus(referrer_id: int, referred_id: int, bot):
-    """Deduct 1 point when referred user leaves channels."""
     referrer = supabase.table("users").select("points, referrals").eq("user_id", referrer_id).execute().data
     if not referrer:
         return
@@ -315,8 +289,7 @@ async def deduct_referral_bonus(referrer_id: int, referred_id: int, bot):
 
 # ================= ADMIN PANEL =================
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
+    if update.effective_user.id not in ADMIN_IDS:
         return
     keyboard = [
         [KeyboardButton("📢 BROADCAST"), KeyboardButton("➕ ADD COUPON")],
@@ -327,26 +300,12 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("👑 **Admin Panel**", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
+# Admin button handlers – these just set state and prompt
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         return
     await update.message.reply_text("📢 Send the message you want to broadcast to all users:")
     context.user_data["awaiting_broadcast"] = True
-
-async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("awaiting_broadcast"):
-        message = update.message.text
-        users = supabase.table("users").select("user_id").execute().data
-        success = 0
-        failed = 0
-        for u in users:
-            try:
-                await context.bot.send_message(chat_id=u["user_id"], text=message, parse_mode=ParseMode.MARKDOWN)
-                success += 1
-            except:
-                failed += 1
-        await update.message.reply_text(f"✅ Broadcast sent.\nSuccess: {success}\nFailed: {failed}")
-        context.user_data.pop("awaiting_broadcast")
 
 async def add_coupon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
@@ -354,9 +313,61 @@ async def add_coupon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📤 Send the coupons line by line (one code per line):")
     context.user_data["awaiting_coupon_add"] = True
 
-async def handle_add_coupon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def remove_coupon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    await update.message.reply_text("🔢 Send the number of coupons to remove (will delete oldest unused coupons):")
+    context.user_data["awaiting_coupon_remove"] = True
+
+async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    await update.message.reply_text("🔗 Send the channel link (e.g., https://t.me/username):")
+    context.user_data["awaiting_channel_add"] = True
+
+async def remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    await update.message.reply_text("🔗 Send the channel link to remove:")
+    context.user_data["awaiting_channel_remove"] = True
+
+async def get_free_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    await update.message.reply_text("🔢 How many coupons do you need?")
+    context.user_data["awaiting_free_code"] = True
+
+async def change_withdraw_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    await update.message.reply_text("💰 Send the new number of points required to withdraw:")
+    context.user_data["awaiting_withdraw_points"] = True
+
+# Unified handler for all admin input states
+async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return  # ignore non-admin text
+
+    text = update.message.text
+
+    # Broadcast
+    if context.user_data.get("awaiting_broadcast"):
+        users = supabase.table("users").select("user_id").execute().data
+        success = 0
+        failed = 0
+        for u in users:
+            try:
+                await context.bot.send_message(chat_id=u["user_id"], text=text, parse_mode=ParseMode.MARKDOWN)
+                success += 1
+            except:
+                failed += 1
+        await update.message.reply_text(f"✅ Broadcast sent.\nSuccess: {success}\nFailed: {failed}")
+        context.user_data.pop("awaiting_broadcast")
+        return
+
+    # Add coupons
     if context.user_data.get("awaiting_coupon_add"):
-        text = update.message.text
         codes = text.strip().split("\n")
         inserted = 0
         for code in codes:
@@ -369,17 +380,12 @@ async def handle_add_coupon(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
         await update.message.reply_text(f"✅ Added {inserted} coupons.")
         context.user_data.pop("awaiting_coupon_add")
-
-async def remove_coupon(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
         return
-    await update.message.reply_text("🔢 Send the number of coupons to remove (will delete oldest unused coupons):")
-    context.user_data["awaiting_coupon_remove"] = True
 
-async def handle_remove_coupon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Remove coupons
     if context.user_data.get("awaiting_coupon_remove"):
         try:
-            num = int(update.message.text)
+            num = int(text)
         except:
             await update.message.reply_text("❌ Invalid number.")
             return
@@ -391,49 +397,34 @@ async def handle_remove_coupon(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             await update.message.reply_text("❌ No unused coupons found.")
         context.user_data.pop("awaiting_coupon_remove")
-
-async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
         return
-    await update.message.reply_text("🔗 Send the channel link (e.g., https://t.me/username):")
-    context.user_data["awaiting_channel_add"] = True
 
-async def handle_add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Add channel
     if context.user_data.get("awaiting_channel_add"):
-        link = update.message.text.strip()
+        link = text.strip()
         try:
             supabase.table("channels").insert({"channel_link": link}).execute()
             await update.message.reply_text("✅ Channel added.")
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {e}")
         context.user_data.pop("awaiting_channel_add")
-
-async def remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
         return
-    await update.message.reply_text("🔗 Send the channel link to remove:")
-    context.user_data["awaiting_channel_remove"] = True
 
-async def handle_remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Remove channel
     if context.user_data.get("awaiting_channel_remove"):
-        link = update.message.text.strip()
+        link = text.strip()
         try:
             supabase.table("channels").delete().eq("channel_link", link).execute()
             await update.message.reply_text("✅ Channel removed.")
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {e}")
         context.user_data.pop("awaiting_channel_remove")
-
-async def get_free_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
         return
-    await update.message.reply_text("🔢 How many coupons do you need?")
-    context.user_data["awaiting_free_code"] = True
 
-async def handle_free_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Get free code
     if context.user_data.get("awaiting_free_code"):
         try:
-            num = int(update.message.text)
+            num = int(text)
         except:
             await update.message.reply_text("❌ Invalid number.")
             return
@@ -443,66 +434,58 @@ async def handle_free_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ No unused coupons.")
             return
         for code in codes:
-            supabase.table("coupons").update({"used": True, "used_by": update.effective_user.id, "used_at": datetime.utcnow().isoformat()}).eq("code", code).execute()
+            supabase.table("coupons").update({"used": True, "used_by": user_id, "used_at": datetime.utcnow().isoformat()}).eq("code", code).execute()
         await update.message.reply_text(f"✅ Here are your {len(codes)} codes:\n" + "\n".join(codes))
         context.user_data.pop("awaiting_free_code")
-
-async def change_withdraw_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
         return
-    await update.message.reply_text("💰 Send the new number of points required to withdraw:")
-    context.user_data["awaiting_withdraw_points"] = True
 
-async def handle_change_withdraw_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Change withdraw points
     if context.user_data.get("awaiting_withdraw_points"):
         try:
-            points = int(update.message.text)
+            points = int(text)
         except:
             await update.message.reply_text("❌ Invalid number.")
             return
         set_withdraw_points(points)
         await update.message.reply_text(f"✅ Withdraw points updated to {points}.")
         context.user_data.pop("awaiting_withdraw_points")
+        return
 
 # ================= VERIFICATION CALLBACK =================
 async def verification_handler(request):
-    """Handle POST from verification website."""
     data = await request.json()
     user_id = data.get("user_id")
     device_id = data.get("device_id")
     if not user_id or not device_id:
         return web.json_response({"status": "error", "message": "Missing data"}, status=400)
-    # Check if this device_id already verified another user
+
     existing = supabase.table("user_verifications").select("user_id").eq("device_id", device_id).execute().data
     if existing:
         return web.json_response({"status": "error", "message": "Authorized Declined: Device already used"})
-    # Check if user exists
+
     user = supabase.table("users").select("user_id, referred_by, verified").eq("user_id", user_id).execute().data
     if not user:
         return web.json_response({"status": "error", "message": "User not found"})
     if user[0].get("verified", False):
         return web.json_response({"status": "error", "message": "Already verified"})
-    # Mark user as verified
+
     supabase.table("users").update({"verified": True}).eq("user_id", user_id).execute()
-    # Record device
     supabase.table("user_verifications").insert({"user_id": user_id, "device_id": device_id, "verified_at": datetime.utcnow().isoformat()}).execute()
-    # Grant referral bonus if referred
+
     referred_by = user[0].get("referred_by")
     if referred_by:
-        # Get bot from app
         bot = request.app['bot']
         await grant_referral_bonus(referred_by, user_id, bot)
-    # Send welcome message to user
+
     bot = request.app['bot']
     await bot.send_message(chat_id=user_id, text="✅ You are verified! Welcome to the bot.")
     return web.json_response({"status": "success", "message": "Verified"})
 
 # ================= MAIN =================
 async def run_bot():
-    # Initialize bot application
     application = Application.builder().token(TOKEN).build()
 
-    # Add all handlers
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(joined_all_callback, pattern="joined_all"))
     application.add_handler(CallbackQueryHandler(agree_withdraw_callback, pattern="agree_withdraw"))
@@ -520,43 +503,31 @@ async def run_bot():
     application.add_handler(MessageHandler(filters.Regex("^➖ REMOVE CHANNEL$"), remove_channel))
     application.add_handler(MessageHandler(filters.Regex("^🎟️ GET A FREE CODE$"), get_free_code))
     application.add_handler(MessageHandler(filters.Regex("^💰 CHANGE WITHDRAW POINTS$"), change_withdraw_points))
-    # Awaiting input handlers
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast_message))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_coupon))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_remove_coupon))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_channel))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_remove_channel))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_free_code))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_change_withdraw_points))
+    # Unified handler for admin text input (must be last among text handlers)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))
 
     # Create aiohttp app
     app = web.Application()
     app['bot'] = application.bot
-
-    # Add verification route
     app.router.add_post('/verify', verification_handler)
 
-    # Telegram webhook route
     async def telegram_webhook(request):
         update = await request.json()
         await application.process_update(Update.de_json(update, application.bot))
         return web.Response(status=200)
 
     app.router.add_post(f'/{TOKEN}', telegram_webhook)
-    app.router.add_post('/webhook', telegram_webhook)  # fallback
+    app.router.add_post('/webhook', telegram_webhook)
 
-    # Start the application
     await application.initialize()
     await application.start()
 
-    # Run web server
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
     await site.start()
-    print("Bot started with webhook and verification endpoint.")
+    print("Bot started with webhook and verification endpoint at /verify")
 
-    # Keep running
     while True:
         await asyncio.sleep(3600)
 

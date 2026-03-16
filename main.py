@@ -446,7 +446,7 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def verification_handler(request):
     print("=== /verify called ===")
     
-    # CORS preflight
+    # Handle CORS preflight
     if request.method == 'OPTIONS':
         return web.Response(status=200, headers={
             'Access-Control-Allow-Origin': '*',
@@ -466,7 +466,7 @@ async def verification_handler(request):
         print(f"Could not read body: {e}")
         text_body = "<unreadable>"
 
-    # Try to parse JSON
+    # Parse JSON
     try:
         data = await request.json()
         print(f"Parsed JSON: {data}")
@@ -485,76 +485,68 @@ async def verification_handler(request):
         return web.json_response({"status": "error", "message": "Missing data"}, status=400,
                                  headers={'Access-Control-Allow-Origin': '*'})
 
-        # Check device
-        try:
-            existing = supabase.table("user_verifications").select("user_id").eq("device_id", device_id).execute()
-            print("Device check result:", existing.data)
-            if existing.data:
-                return web.json_response({"status": "error", "message": "Authorized Declined: Device already used"},
-                                         headers={'Access-Control-Allow-Origin': '*'})
-        except Exception as e:
-            print("Supabase device check error:", e)
-            return web.json_response({"status": "error", "message": "Database error"}, status=500,
+    # Check if device already used
+    try:
+        existing = supabase.table("user_verifications").select("user_id").eq("device_id", device_id).execute()
+        if existing.data:
+            return web.json_response({"status": "error", "message": "Authorized Declined: Device already used"},
                                      headers={'Access-Control-Allow-Origin': '*'})
+    except Exception as e:
+        print(f"Device check error: {e}")
+        return web.json_response({"status": "error", "message": "Database error"}, status=500,
+                                 headers={'Access-Control-Allow-Origin': '*'})
 
-        # Check user
-        try:
-            user = supabase.table("users").select("user_id, referred_by, verified").eq("user_id", user_id).execute()
-            print("User check result:", user.data)
-            if not user.data:
-                return web.json_response({"status": "error", "message": "User not found"},
-                                         headers={'Access-Control-Allow-Origin': '*'})
-            if user.data[0].get("verified", False):
-                return web.json_response({"status": "error", "message": "Already verified"},
-                                         headers={'Access-Control-Allow-Origin': '*'})
-        except Exception as e:
-            print("Supabase user check error:", e)
-            return web.json_response({"status": "error", "message": "Database error"}, status=500,
+    # Check user
+    try:
+        user = supabase.table("users").select("user_id, referred_by, verified").eq("user_id", user_id).execute()
+        if not user.data:
+            return web.json_response({"status": "error", "message": "User not found"},
                                      headers={'Access-Control-Allow-Origin': '*'})
-
-        # Mark verified
-        try:
-            supabase.table("users").update({"verified": True}).eq("user_id", user_id).execute()
-            supabase.table("user_verifications").insert({"user_id": user_id, "device_id": device_id, "verified_at": datetime.utcnow().isoformat()}).execute()
-            print("User verified")
-        except Exception as e:
-            print("Supabase update error:", e)
-            return web.json_response({"status": "error", "message": "Failed to save verification"}, status=500,
+        if user.data[0].get("verified", False):
+            return web.json_response({"status": "error", "message": "Already verified"},
                                      headers={'Access-Control-Allow-Origin': '*'})
+    except Exception as e:
+        print(f"User check error: {e}")
+        return web.json_response({"status": "error", "message": "Database error"}, status=500,
+                                 headers={'Access-Control-Allow-Origin': '*'})
 
-        # Send welcome message
-        try:
-            bot = request.app.get('bot')
-            if not bot:
-                print("Bot instance not found in app")
-                return web.json_response({"status": "error", "message": "Bot not available"}, status=500,
-                                         headers={'Access-Control-Allow-Origin': '*'})
+    # Mark user as verified
+    try:
+        supabase.table("users").update({"verified": True}).eq("user_id", user_id).execute()
+        supabase.table("user_verifications").insert({
+            "user_id": user_id,
+            "device_id": device_id,
+            "verified_at": datetime.utcnow().isoformat()
+        }).execute()
+        print("User verified in DB")
+    except Exception as e:
+        print(f"Verification save error: {e}")
+        return web.json_response({"status": "error", "message": "Failed to save verification"}, status=500,
+                                 headers={'Access-Control-Allow-Origin': '*'})
+
+    # Send welcome message
+    try:
+        bot = request.app.get('bot')
+        if bot:
             await bot.send_message(chat_id=user_id, text="✅ You are verified! Welcome to the bot.")
             print("Welcome message sent")
-        except Exception as e:
-            print("Telegram send error:", e)
-            # Still return success because user is verified
-
-        # Grant referral bonus
-        referred_by = user.data[0].get("referred_by")
-        if referred_by:
-            try:
-                bot = request.app.get('bot')
-                if bot:
-                    await grant_referral_bonus(referred_by, user_id, bot)
-                    print("Referral bonus granted")
-            except Exception as e:
-                print("Referral bonus error:", e)
-
-        return web.json_response({"status": "success", "message": "Verified"},
-                                 headers={'Access-Control-Allow-Origin': '*'})
-
     except Exception as e:
-        print("UNHANDLED EXCEPTION:", e)
-        import traceback
-        traceback.print_exc()
-        return web.json_response({"status": "error", "message": "Internal server error"}, status=500,
-                                 headers={'Access-Control-Allow-Origin': '*'})
+        print(f"Telegram send error: {e}")
+        # Don't fail the whole request; user is verified
+
+    # Grant referral bonus if applicable
+    referred_by = user.data[0].get("referred_by")
+    if referred_by:
+        try:
+            bot = request.app.get('bot')
+            if bot:
+                await grant_referral_bonus(referred_by, user_id, bot)
+                print("Referral bonus granted")
+        except Exception as e:
+            print(f"Referral bonus error: {e}")
+
+    return web.json_response({"status": "success", "message": "Verified"},
+                             headers={'Access-Control-Allow-Origin': '*'})
 
 # ================= MAIN =================
 async def run_bot():

@@ -187,14 +187,19 @@ async def send_verification(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await update.message.reply_text(text, reply_markup=reply_markup)
 
 async def verify_start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send WebApp button to user."""
     query = update.callback_query
     await query.answer()
-    # Use your exact Vercel URL
-    web_app_url = "https://refer-bot-verify.vercel.app"
-    keyboard = [[InlineKeyboardButton("🔐 VERIFY NOW", web_app=WebAppInfo(url=web_app_url))]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("Click below to verify with our secure mini app:", reply_markup=reply_markup)
+    user_id = query.from_user.id
+
+    device_id = str(uuid4())
+
+    supabase.table("users").update({
+        "verified": True,
+        "device_id": device_id
+    }).eq("user_id", user_id).execute()
+
+    await query.edit_message_text("✅ Verification Successful!")
+    await show_main_menu(query.message, context)
 
 async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive data from WebApp."""
@@ -631,8 +636,8 @@ def main():
         application.run_webhook(
             listen="0.0.0.0",
             port=int(os.environ.get("PORT", 8080)),
-            url_path=TELEGRAM_TOKEN,
-            webhook_url=f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}"
+            url_path="webhook",
+            webhook_url=f"{WEBHOOK_URL}/webhook"
         )
     else:
         # Polling fallback (not recommended on Render free tier)

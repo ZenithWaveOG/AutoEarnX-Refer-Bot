@@ -19,8 +19,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "YOUR_SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "YOUR_SUPABASE_KEY")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://your-app.onrender.com/webhook")
 ADMIN_IDS = [int(id) for id in os.environ.get("ADMIN_IDS", "123456789,987654321").split(",")]
-# Must be set to the absolute URL of your verification page, e.g. https://your-app.onrender.com/v
-VERIFY_SITE_URL = os.environ.get("VERIFY_SITE_URL", "https://your-app.onrender.com/v")
+VERIFY_SITE_URL = os.environ.get("VERIFY_SITE_URL", "https://your-app.onrender.com/v")  # must be absolute
 
 DEFAULT_WITHDRAW_POINTS = 3
 
@@ -77,10 +76,14 @@ async def require_verified(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def show_force_join_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channels = supabase.table("channels").select("channel_link").execute()
     text = "<b>🚨 Force Join Required</b>\n\nPlease join the following channels first:\n"
+    keyboard = []
     for ch in channels.data:
-        text += f"• {ch['channel_link']}\n"
-    text += "\nAfter joining, click the button below."
-    keyboard = [[InlineKeyboardButton("✅ I have joined all", callback_data="joined_all")]]
+        link = ch["channel_link"]
+        text += f"• {link}\n"
+        # Add a button for each channel to open it
+        keyboard.append([InlineKeyboardButton("🔗 Join Channel", url=link)])
+    text += "\nAfter joining all, click the button below."
+    keyboard.append([InlineKeyboardButton("✅ I have joined all", callback_data="joined_all")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
@@ -89,7 +92,6 @@ async def joined_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     user_id = query.from_user.id
     if await is_user_joined_channels(user_id, context):
-        # Build absolute URL using VERIFY_SITE_URL
         url = f"{VERIFY_SITE_URL.rstrip('/')}?user_id={user_id}"
         keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=url)]]
         await query.edit_message_text(
@@ -106,6 +108,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or f"user_{user_id}"
     args = context.args
 
+    # Handle referral
     if args and args[0].isdigit():
         referrer_id = int(args[0])
         if referrer_id != user_id:
@@ -119,7 +122,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "referred_by": referrer_id,
                     "verified": False
                 }).execute()
+                logger.info(f"User {user_id} referred by {referrer_id}")
 
+    # Ensure user exists in DB
     existing = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
     if not existing.data:
         supabase.table("users").insert({
@@ -130,6 +135,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "referred_by": None,
             "verified": False
         }).execute()
+        logger.info(f"New user {user_id} created")
 
     if await is_user_verified(user_id):
         await show_main_menu(update, context)
@@ -201,18 +207,38 @@ async def agree_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    username = query.from_user.username or f"user_{user_id}"
+
+    # Get a free coupon
     coupon = supabase.table("coupons").select("code").eq("used", False).limit(1).execute()
     if not coupon.data:
         await query.edit_message_text("❌ No coupons available. Contact admin.")
         return
     code = coupon.data[0]["code"]
+
+    # Mark as used
     supabase.table("coupons").update({"used": True, "used_by": user_id, "used_at": datetime.utcnow().isoformat()}).eq("code", code).execute()
+
+    # Deduct points
     cost = get_withdraw_points()
     user = supabase.table("users").select("points").eq("user_id", user_id).execute().data[0]
     new_points = user["points"] - cost
     supabase.table("users").update({"points": new_points}).eq("user_id", user_id).execute()
+
+    # Notify user
     text = f"<b>🎉 Shein Code Generated Successfully!</b>\n\n🎫 Code: <code>{code}</code>\n🛍️ <a href='https://www.sheinindia.in/c/sverse-5939-37961?query=%3Arelevance%3Agenderfilter%3AMen&gridColumns=5#main-content'>Order Here</a>\n\n⚠️ Copy the code and use it immediately."
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+    # Notify all admins
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=f"<b>🛍️ Coupon Redeemed</b>\n\nUser: {username} (<code>{user_id}</code>)\nCode: <code>{code}</code>\nTime: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify admin {admin_id}: {e}")
 
 # ================= MY VOUCHERS =================
 async def my_vouchers(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -223,7 +249,7 @@ async def my_vouchers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not vouchers.data:
         await update.message.reply_text("<b>📜 MY VOUCHERS</b>\n\n━━━━━━━━━━━━━━━━━━━━\nNo vouchers yet.\n━━━━━━━━━━━━━━━━━━━━\n📊 Total: 0", parse_mode=ParseMode.HTML)
         return
-    lines = [f"🎫 <code>{v['code']}</code>" for v in vouchers.data]
+    lines = [f"🎫 <code>{v['code']}</code> (used: {v['used_at'][:10]})" for v in vouchers.data]
     total = len(vouchers.data)
     text = "<b>📜 MY VOUCHERS</b>\n━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines) + "\n━━━━━━━━━━━━━━━━━━━━\n📊 Total: " + str(total)
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
@@ -258,13 +284,16 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= REFERRAL BONUS HANDLER =================
 async def grant_referral_bonus(referrer_id: int, referred_id: int, bot):
+    """Give +1 point to referrer and notify."""
     referrer = supabase.table("users").select("points, referrals").eq("user_id", referrer_id).execute().data
     if not referrer:
+        logger.error(f"Referrer {referrer_id} not found")
         return
     referrer = referrer[0]
     new_points = referrer["points"] + 1
     new_refs = referrer["referrals"] + 1
     supabase.table("users").update({"points": new_points, "referrals": new_refs}).eq("user_id", referrer_id).execute()
+    logger.info(f"Granted referral bonus to {referrer_id} for referred {referred_id}")
     try:
         await bot.send_message(
             chat_id=referrer_id,
@@ -275,6 +304,7 @@ async def grant_referral_bonus(referrer_id: int, referred_id: int, bot):
         logger.error(f"Failed to notify referrer {referrer_id}: {e}")
 
 async def deduct_referral_bonus(referrer_id: int, referred_id: int, bot):
+    """Deduct 1 point when referred user leaves channels."""
     referrer = supabase.table("users").select("points, referrals").eq("user_id", referrer_id).execute().data
     if not referrer:
         return

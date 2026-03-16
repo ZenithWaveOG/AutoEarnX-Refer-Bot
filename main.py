@@ -19,7 +19,8 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "YOUR_SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "YOUR_SUPABASE_KEY")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://your-app.onrender.com/webhook")
 ADMIN_IDS = [int(id) for id in os.environ.get("ADMIN_IDS", "123456789,987654321").split(",")]
-VERIFY_SITE_URL = os.environ.get("VERIFY_SITE_URL", "/v")  # default to relative path
+# Must be set to the absolute URL of your verification page, e.g. https://your-app.onrender.com/v
+VERIFY_SITE_URL = os.environ.get("VERIFY_SITE_URL", "https://your-app.onrender.com/v")
 
 DEFAULT_WITHDRAW_POINTS = 3
 
@@ -88,8 +89,8 @@ async def joined_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     user_id = query.from_user.id
     if await is_user_joined_channels(user_id, context):
-        # Use relative path to the self-hosted verification page
-        url = f"/v?user_id={user_id}"
+        # Build absolute URL using VERIFY_SITE_URL
+        url = f"{VERIFY_SITE_URL.rstrip('/')}?user_id={user_id}"
         keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=url)]]
         await query.edit_message_text(
             "<b>✅ You have joined all channels!</b>\n\n<b>🛑 Verification required:</b> Click below to verify.",
@@ -135,7 +136,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await is_user_joined_channels(user_id, context):
-        url = f"/v?user_id={user_id}"
+        url = f"{VERIFY_SITE_URL.rstrip('/')}?user_id={user_id}"
         keyboard = [[InlineKeyboardButton("🛑 VERIFY NOW", url=url)]]
         await update.message.reply_text(
             "<b>✅ You have joined all channels!</b>\n\n<b>🛑 Verification required:</b> Click below to verify.",

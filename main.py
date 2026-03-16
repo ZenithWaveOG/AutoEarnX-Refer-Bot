@@ -5,6 +5,7 @@ from datetime import datetime
 from uuid import uuid4
 from typing import Dict, List, Optional
 
+from telegram.ext import ChatMemberHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
@@ -612,7 +613,7 @@ def main():
     application.add_handler(MessageHandler(filters.Regex("^💰 CHANGE WITHDRAW POINTS$"), change_withdraw_points_handler))
     application.add_handler(MessageHandler(filters.Regex("^🔙 BACK TO MAIN MENU$"), back_to_main))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))  # admin text input
-    application.add_handler(MessageHandler(filters.StatusUpdate.CHAT_MEMBER, chat_member_handler))  # detect leaves
+    application.add_handler(ChatMemberHandler(chat_member_handler, ChatMemberHandler.CHAT_MEMBER))
 
     application.add_error_handler(error_handler)
 

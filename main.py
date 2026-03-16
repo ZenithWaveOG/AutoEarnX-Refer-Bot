@@ -589,12 +589,15 @@ async def run_bot():
     app.router.add_post('/verify', verification_handler)
 
     # Telegram webhook route
-    async def telegram_webhook(request):
-        update = await request.json()
-        await application.process_update(Update.de_json(update, application.bot))
-        return web.Response(status=200)
+    # Telegram webhook route
+async def telegram_webhook(request):
+    update = await request.json()
+    await application.process_update(Update.de_json(update, application.bot))
+    return web.Response(status=200)
 
-    app.router.add_post(f'/{TOKEN}', telegram_webhook)
+# Add both /{TOKEN} and /webhook paths
+app.router.add_post(f'/{TOKEN}', telegram_webhook)
+app.router.add_post('/webhook', telegram_webhook)   # <-- add this line
 
     # Start the application
     await application.initialize()

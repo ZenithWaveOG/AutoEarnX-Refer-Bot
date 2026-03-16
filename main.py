@@ -600,7 +600,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))
-    application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
+    application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, webapp_data_handler))
     application.add_handler(MessageHandler(filters.Regex("^💰 BALANCE$"), balance_handler))
     application.add_handler(MessageHandler(filters.Regex("^🤝 REFER$"), refer_handler))
     application.add_handler(MessageHandler(filters.Regex("^🎁 WITHDRAW$"), withdraw_handler))

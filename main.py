@@ -31,19 +31,31 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ================= HELPER FUNCTIONS =================
 async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    channels = supabase.table("channels").select("channel_link").execute()
+    channels = supabase.table("channels").select("chat_id, channel_link").execute()
     if not channels.data:
         return True
     for ch in channels.data:
-        link = ch["channel_link"]
-        chat_username = link.split("/")[-1]
-        try:
-            member = await context.bot.get_chat_member(chat_id=f"@{chat_username}", user_id=user_id)
-            if member.status not in ["member", "administrator", "creator"]:
+        chat_id = ch.get("chat_id")
+        if chat_id:
+            # Use chat_id if available (preferred)
+            try:
+                member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+                if member.status not in ["member", "administrator", "creator"]:
+                    return False
+            except Exception as e:
+                logger.error(f"Error checking channel {chat_id}: {e}")
                 return False
-        except Exception as e:
-            logger.error(f"Error checking channel {link}: {e}")
-            return False
+        else:
+            # Fallback to username from link (legacy)
+            link = ch["channel_link"]
+            chat_username = link.split("/")[-1]
+            try:
+                member = await context.bot.get_chat_member(chat_id=f"@{chat_username}", user_id=user_id)
+                if member.status not in ["member", "administrator", "creator"]:
+                    return False
+            except Exception as e:
+                logger.error(f"Error checking channel {link}: {e}")
+                return False
     return True
 
 async def is_user_verified(user_id: int) -> bool:
@@ -295,6 +307,7 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= REFERRAL BONUS HANDLER =================
 async def grant_referral_bonus(referrer_id: int, referred_id: int, bot):
     """Give +1 point to referrer and notify."""
+    logger.info(f"Attempting to grant referral bonus to {referrer_id} for {referred_id}")
     referrer = supabase.table("users").select("points, referrals").eq("user_id", referrer_id).execute().data
     if not referrer:
         logger.error(f"Referrer {referrer_id} not found")
@@ -315,13 +328,16 @@ async def grant_referral_bonus(referrer_id: int, referred_id: int, bot):
 
 async def deduct_referral_bonus(referrer_id: int, referred_id: int, bot):
     """Deduct 1 point when referred user leaves channels."""
+    logger.info(f"Attempting to deduct referral bonus from {referrer_id} because {referred_id} left")
     referrer = supabase.table("users").select("points, referrals").eq("user_id", referrer_id).execute().data
     if not referrer:
+        logger.error(f"Referrer {referrer_id} not found")
         return
     referrer = referrer[0]
     new_points = max(referrer["points"] - 1, 0)
     new_refs = max(referrer["referrals"] - 1, 0)
     supabase.table("users").update({"points": new_points, "referrals": new_refs}).eq("user_id", referrer_id).execute()
+    logger.info(f"Deducted 1 point from referrer {referrer_id} (new points: {new_points}, new refs: {new_refs})")
     try:
         await bot.send_message(
             chat_id=referrer_id,
@@ -368,11 +384,48 @@ async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔗 Send the channel link (e.g., https://t.me/username):")
     context.user_data["awaiting_channel_add"] = True
 
+async def handle_add_channel_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the channel link input from admin, fetch chat_id and store."""
+    if context.user_data.get("awaiting_channel_add"):
+        link = update.message.text.strip()
+        try:
+            # Extract username from link
+            if "t.me/" in link:
+                username = link.split("t.me/")[-1].split("?")[0].split("/")[0]
+                chat = await context.bot.get_chat(chat_id=f"@{username}")
+                chat_id = chat.id
+                # Store channel with chat_id
+                supabase.table("channels").insert({
+                    "channel_link": link,
+                    "chat_id": chat_id
+                }).execute()
+                await update.message.reply_text(f"✅ Channel added with ID {chat_id}.")
+            else:
+                await update.message.reply_text("❌ Invalid link format. Use https://t.me/username")
+        except Exception as e:
+            logger.error(f"Error adding channel: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+        context.user_data.pop("awaiting_channel_add")
+        return True
+    return False
+
 async def remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         return
     await update.message.reply_text("🔗 Send the channel link to remove:")
     context.user_data["awaiting_channel_remove"] = True
+
+async def handle_remove_channel_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("awaiting_channel_remove"):
+        link = update.message.text.strip()
+        try:
+            supabase.table("channels").delete().eq("channel_link", link).execute()
+            await update.message.reply_text("✅ Channel removed.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+        context.user_data.pop("awaiting_channel_remove")
+        return True
+    return False
 
 async def get_free_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
@@ -391,8 +444,15 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user_id not in ADMIN_IDS:
         return
 
+    # First check for channel add/remove input (these are text inputs that don't follow a regex pattern)
+    if await handle_add_channel_input(update, context):
+        return
+    if await handle_remove_channel_input(update, context):
+        return
+
     text = update.message.text
 
+    # Broadcast
     if context.user_data.get("awaiting_broadcast"):
         users = supabase.table("users").select("user_id").execute().data
         success = 0
@@ -407,6 +467,7 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.pop("awaiting_broadcast")
         return
 
+    # Add coupons
     if context.user_data.get("awaiting_coupon_add"):
         codes = text.strip().split("\n")
         inserted = 0
@@ -422,6 +483,7 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.pop("awaiting_coupon_add")
         return
 
+    # Remove coupons
     if context.user_data.get("awaiting_coupon_remove"):
         try:
             num = int(text)
@@ -438,26 +500,7 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.pop("awaiting_coupon_remove")
         return
 
-    if context.user_data.get("awaiting_channel_add"):
-        link = text.strip()
-        try:
-            supabase.table("channels").insert({"channel_link": link}).execute()
-            await update.message.reply_text("✅ Channel added.")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-        context.user_data.pop("awaiting_channel_add")
-        return
-
-    if context.user_data.get("awaiting_channel_remove"):
-        link = text.strip()
-        try:
-            supabase.table("channels").delete().eq("channel_link", link).execute()
-            await update.message.reply_text("✅ Channel removed.")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-        context.user_data.pop("awaiting_channel_remove")
-        return
-
+    # Get free code
     if context.user_data.get("awaiting_free_code"):
         try:
             num = int(text)
@@ -475,6 +518,7 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.pop("awaiting_free_code")
         return
 
+    # Change withdraw points
     if context.user_data.get("awaiting_withdraw_points"):
         try:
             points = int(text)
@@ -491,45 +535,50 @@ async def track_channel_membership(update: Update, context: ContextTypes.DEFAULT
     """Handle chat member updates to detect when users leave force‑join channels."""
     chat_member = update.chat_member
     if not chat_member:
+        logger.debug("No chat_member in update")
         return
 
-    # Only care about channels where the bot is admin
+    logger.info(f"Chat member update received: chat={chat_member.chat.id} ({chat_member.chat.title}), user={chat_member.new_chat_member.user.id}")
+
+    # Only care about channels where the bot is admin – we have stored chat_ids in DB
+    channels = supabase.table("channels").select("chat_id").execute()
+    if not channels.data:
+        logger.debug("No force-join channels configured")
+        return
+
+    channel_ids = [ch["chat_id"] for ch in channels.data if ch.get("chat_id")]
+    if not channel_ids:
+        logger.debug("No chat_ids stored for channels (maybe old data)")
+        return
+
     chat_id = chat_member.chat.id
-    chat_username = chat_member.chat.username
-    if not chat_username:
-        # For private channels, we need to store chat_id maybe, but we only have links.
-        # We'll rely on username if available, otherwise skip (or store chat_id mapping)
-        # For simplicity, we'll only handle public channels with username.
+    if chat_id not in channel_ids:
+        logger.debug(f"Chat {chat_id} is not a force-join channel")
         return
 
-    # Check if this chat is one of our force-join channels
-    channels = supabase.table("channels").select("channel_link").execute()
-    channel_usernames = []
-    for ch in channels.data:
-        link = ch["channel_link"]
-        uname = link.split("/")[-1]
-        channel_usernames.append(uname)
-
-    if chat_username not in channel_usernames:
-        return  # not one of our channels
-
-    # Get user who left
+    # Get user who changed
     user = chat_member.new_chat_member.user
     user_id = user.id
     old_status = chat_member.old_chat_member.status
     new_status = chat_member.new_chat_member.status
 
-    # Detect leave: from member to left/kicked
+    logger.info(f"User {user_id} status changed in channel {chat_id}: {old_status} -> {new_status}")
+
+    # Detect leave: from member/administrator/creator to left/kicked
     if old_status in ["member", "administrator", "creator"] and new_status in ["left", "kicked"]:
-        logger.info(f"User {user_id} left channel @{chat_username}")
+        logger.info(f"User {user_id} left channel {chat_id}")
 
         # Check if this user has a referrer
         user_data = supabase.table("users").select("referred_by").eq("user_id", user_id).execute().data
-        if not user_data or not user_data[0].get("referred_by"):
+        if not user_data:
+            logger.info(f"User {user_id} not in database, ignoring")
+            return
+        referrer_id = user_data[0].get("referred_by")
+        if not referrer_id:
+            logger.info(f"User {user_id} has no referrer, ignoring")
             return
 
-        referrer_id = user_data[0]["referred_by"]
-        logger.info(f"Deducting 1 point from referrer {referrer_id} because referred user {user_id} left channel")
+        logger.info(f"User {user_id} referred by {referrer_id}, deducting point")
         await deduct_referral_bonus(referrer_id, user_id, context.bot)
 
     # Note: We do not handle join events here because points are only given at verification time.

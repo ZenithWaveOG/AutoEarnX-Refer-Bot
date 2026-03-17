@@ -549,53 +549,61 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ================= CHAT MEMBER HANDLER (track leaves) =================
 async def track_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle chat member updates to detect when users leave force‑join channels."""
-    chat_member = update.chat_member
-    if not chat_member:
-        logger.debug("No chat_member in update")
-        return
-
-    logger.info(f"Chat member update received: chat={chat_member.chat.id} ({chat_member.chat.title}), user={chat_member.new_chat_member.user.id}")
-
-    # Get all force‑join channel chat_ids
-    channels = supabase.table("channels").select("chat_id").execute()
-    if not channels.data:
-        logger.debug("No force-join channels configured")
-        return
-
-    channel_ids = [ch["chat_id"] for ch in channels.data if ch.get("chat_id")]
-    if not channel_ids:
-        logger.debug("No chat_ids stored for channels (maybe old data)")
-        return
-
-    chat_id = chat_member.chat.id
-    if chat_id not in channel_ids:
-        logger.debug(f"Chat {chat_id} is not a force-join channel")
-        return
-
-    # Get user who changed
-    user = chat_member.new_chat_member.user
-    user_id = user.id
-    old_status = chat_member.old_chat_member.status
-    new_status = chat_member.new_chat_member.status
-
-    logger.info(f"User {user_id} status changed in channel {chat_id}: {old_status} -> {new_status}")
-
-    # Detect leave: from member/administrator/creator to left/kicked
-    if old_status in ["member", "administrator", "creator"] and new_status in ["left", "kicked"]:
-        logger.info(f"User {user_id} left channel {chat_id}")
-
-        # Check if this user has a referrer
-        user_data = supabase.table("users").select("referred_by").eq("user_id", user_id).execute().data
-        if not user_data:
-            logger.info(f"User {user_id} not in database, ignoring")
-            return
-        referrer_id = user_data[0].get("referred_by")
-        if not referrer_id:
-            logger.info(f"User {user_id} has no referrer, ignoring")
+    try:
+        chat_member = update.chat_member
+        if not chat_member:
+            logger.debug("No chat_member in update")
             return
 
-        logger.info(f"User {user_id} referred by {referrer_id}, deducting point")
-        await deduct_referral_bonus(referrer_id, user_id, context.bot)
+        logger.info(f"=== CHAT MEMBER UPDATE ===")
+        logger.info(f"Chat: {chat_member.chat.id} ({chat_member.chat.title})")
+        logger.info(f"User: {chat_member.new_chat_member.user.id} ({chat_member.new_chat_member.user.full_name})")
+        logger.info(f"Old status: {chat_member.old_chat_member.status}")
+        logger.info(f"New status: {chat_member.new_chat_member.status}")
+        logger.info(f"Date: {chat_member.date}")
+
+        # Get all force‑join channel chat_ids
+        channels = supabase.table("channels").select("chat_id").execute()
+        if not channels.data:
+            logger.debug("No force-join channels configured")
+            return
+
+        channel_ids = [ch["chat_id"] for ch in channels.data if ch.get("chat_id")]
+        if not channel_ids:
+            logger.debug("No chat_ids stored for channels (maybe old data)")
+            return
+
+        chat_id = chat_member.chat.id
+        if chat_id not in channel_ids:
+            logger.debug(f"Chat {chat_id} is not a force-join channel")
+            return
+
+        # Get user who changed
+        user = chat_member.new_chat_member.user
+        user_id = user.id
+        old_status = chat_member.old_chat_member.status
+        new_status = chat_member.new_chat_member.status
+
+        # Detect leave: from member/administrator/creator to left/kicked
+        if old_status in ["member", "administrator", "creator"] and new_status in ["left", "kicked"]:
+            logger.info(f"✅ User {user_id} LEFT channel {chat_id}")
+
+            # Check if this user has a referrer
+            user_data = supabase.table("users").select("referred_by").eq("user_id", user_id).execute().data
+            if not user_data:
+                logger.info(f"User {user_id} not in database, ignoring")
+                return
+            referrer_id = user_data[0].get("referred_by")
+            if not referrer_id:
+                logger.info(f"User {user_id} has no referrer, ignoring")
+                return
+
+            logger.info(f"User {user_id} referred by {referrer_id}, deducting point")
+            await deduct_referral_bonus(referrer_id, user_id, context.bot)
+        else:
+            logger.info(f"User {user_id} status change not considered a leave: {old_status} -> {new_status}")
+    except Exception as e:
+        logger.error(f"Exception in track_channel_membership: {e}", exc_info=True)
 
 # ================= VERIFICATION PAGE (SELF-HOSTED) =================
 async def verification_page(request):

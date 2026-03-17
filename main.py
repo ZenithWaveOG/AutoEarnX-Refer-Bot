@@ -37,9 +37,16 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ================= HELPER FUNCTIONS =================
 async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Check if user is member of all force-join channels."""
-    channels = supabase.table("channels").select("chat_id, channel_link").execute()
+    try:
+        channels = supabase.table("channels").select("chat_id, channel_link").execute()
+    except Exception as e:
+        logger.error(f"Supabase query error in is_user_joined_channels: {e}")
+        # If column missing, fallback to selecting only channel_link
+        channels = supabase.table("channels").select("channel_link").execute()
+
     if not channels.data:
         return True
+
     for ch in channels.data:
         chat_id = ch.get("chat_id")
         if chat_id:
@@ -51,7 +58,7 @@ async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TY
                 logger.error(f"Error checking channel {chat_id}: {e}")
                 return False
         else:
-            # fallback to username (old channels)
+            # fallback to username from link
             link = ch["channel_link"]
             chat_username = link.split("/")[-1]
             try:
@@ -62,7 +69,6 @@ async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TY
                 logger.error(f"Error checking channel {link}: {e}")
                 return False
     return True
-
 async def is_user_verified(user_id: int) -> bool:
     """Check if user is verified (or is admin)."""
     if user_id in ADMIN_IDS:

@@ -14,6 +14,7 @@ from supabase import create_client, Client
 from aiohttp import web
 
 # ================= CONFIG =================
+# Set these environment variables on Render:
 TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "YOUR_SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "YOUR_SUPABASE_KEY")
@@ -23,7 +24,11 @@ VERIFY_SITE_URL = os.environ.get("VERIFY_SITE_URL", "https://your-app.onrender.c
 
 DEFAULT_WITHDRAW_POINTS = 3
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+# Logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 # ================= SUPABASE INIT =================
@@ -31,13 +36,13 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ================= HELPER FUNCTIONS =================
 async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if user is member of all force-join channels."""
     channels = supabase.table("channels").select("chat_id, channel_link").execute()
     if not channels.data:
         return True
     for ch in channels.data:
         chat_id = ch.get("chat_id")
         if chat_id:
-            # Use chat_id if available (preferred)
             try:
                 member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
                 if member.status not in ["member", "administrator", "creator"]:
@@ -46,7 +51,7 @@ async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TY
                 logger.error(f"Error checking channel {chat_id}: {e}")
                 return False
         else:
-            # Fallback to username from link (legacy)
+            # fallback to username (old channels)
             link = ch["channel_link"]
             chat_username = link.split("/")[-1]
             try:
@@ -59,22 +64,26 @@ async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TY
     return True
 
 async def is_user_verified(user_id: int) -> bool:
+    """Check if user is verified (or is admin)."""
     if user_id in ADMIN_IDS:
         return True
     user = supabase.table("users").select("verified").eq("user_id", user_id).execute()
     return user.data and user.data[0].get("verified", False)
 
 async def get_referral_link(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> str:
+    """Generate a unique referral link for the user."""
     bot_username = (await context.bot.get_me()).username
     return f"https://t.me/{bot_username}?start={user_id}"
 
 def get_withdraw_points() -> int:
+    """Get current withdrawal points requirement from admin_settings."""
     res = supabase.table("admin_settings").select("value").eq("key", "withdraw_points").execute()
     if res.data:
         return int(res.data[0]["value"])
     return DEFAULT_WITHDRAW_POINTS
 
 def set_withdraw_points(points: int):
+    """Update withdrawal points requirement."""
     supabase.table("admin_settings").upsert({"key": "withdraw_points", "value": str(points)}).execute()
 
 async def require_verified(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -95,6 +104,7 @@ async def require_verified(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 # ================= FORCE JOIN HANDLERS =================
 async def show_force_join_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Display list of channels with join buttons."""
     channels = supabase.table("channels").select("channel_link").execute()
     text = "<b>🚨 Force Join Required</b>\n\nPlease join the following channels first:\n"
     keyboard = []
@@ -341,7 +351,7 @@ async def deduct_referral_bonus(referrer_id: int, referred_id: int, bot):
     try:
         await bot.send_message(
             chat_id=referrer_id,
-            text="<b>⚠️ Referral Leaved Channels!</b>\n\n💰 Lost -1 pt(s)\n❌ Reward deducted!\n\n⚠️ Note: A referred user has left a required channel.",
+            text="<b>⚠️ Referral Left Channels!</b>\n\n💰 Lost -1 pt(s)\n❌ Reward deducted!\n\n⚠️ Note: A referred user has left a required channel.",
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
@@ -540,7 +550,7 @@ async def track_channel_membership(update: Update, context: ContextTypes.DEFAULT
 
     logger.info(f"Chat member update received: chat={chat_member.chat.id} ({chat_member.chat.title}), user={chat_member.new_chat_member.user.id}")
 
-    # Only care about channels where the bot is admin – we have stored chat_ids in DB
+    # Get all force‑join channel chat_ids
     channels = supabase.table("channels").select("chat_id").execute()
     if not channels.data:
         logger.debug("No force-join channels configured")
@@ -580,8 +590,6 @@ async def track_channel_membership(update: Update, context: ContextTypes.DEFAULT
 
         logger.info(f"User {user_id} referred by {referrer_id}, deducting point")
         await deduct_referral_bonus(referrer_id, user_id, context.bot)
-
-    # Note: We do not handle join events here because points are only given at verification time.
 
 # ================= VERIFICATION PAGE (SELF-HOSTED) =================
 async def verification_page(request):
@@ -793,6 +801,21 @@ async def verification_handler(request):
     return web.json_response({"status": "success", "message": "Verified"},
                              headers={'Access-Control-Allow-Origin': '*'})
 
+# ================= ERROR HANDLER =================
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log all errors and notify admins."""
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+    # Optionally notify admins
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=f"⚠️ Bot error:\n<code>{context.error}</code>",
+                parse_mode=ParseMode.HTML
+            )
+        except:
+            pass
+
 # ================= MAIN =================
 async def run_bot():
     application = Application.builder().token(TOKEN).build()
@@ -818,6 +841,8 @@ async def run_bot():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_admin_input))
     # Chat member handler to detect when users leave channels
     application.add_handler(ChatMemberHandler(track_channel_membership, ChatMemberHandler.CHAT_MEMBER))
+    # Error handler
+    application.add_error_handler(error_handler)
 
     app = web.Application()
     app['bot'] = application.bot

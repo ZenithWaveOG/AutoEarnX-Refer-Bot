@@ -332,7 +332,8 @@ async def withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_link = "https://www.sheinindia.in/c/sverse-5939-37961?query=%3Arelevance%3Agenderfilter%3AMen&gridColumns=5#main-content"
         text = f"<b>🎉 Shein Code Generated Successfully!</b>\n\n🎫 Code: <code>{code}</code>\n🛍️ <a href='{order_link}'>Order Here</a>\n\n⚠️ Copy the code and use it immediately."
     else:  # bigbasket
-        order_link = "https://www.bigbasket.com/sweets"
+        # UPDATED LINK
+        order_link = "https://www.bigbasket.com/sh/f9c23/"
         text = f"<b>🎉 BigBasket Sweets Code Generated Successfully!</b>\n\n🎫 Code: <code>{code}</code>\n🛍️ <a href='{order_link}'>Order Here</a>\n\n⚠️ Copy the code and use it immediately."
 
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -348,7 +349,7 @@ async def withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logger.error(f"Failed to notify admin {admin_id}: {e}")
-
+            
 # ================= MY VOUCHERS =================
 async def my_vouchers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_verified(update, context):

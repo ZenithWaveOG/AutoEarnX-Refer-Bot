@@ -49,29 +49,29 @@ async def is_user_joined_channels(user_id: int, context: ContextTypes.DEFAULT_TY
     all_joined = True
     for ch in channels.data:
         chat_id = ch.get("chat_id")
+        link = ch.get("channel_link")
         try:
             if chat_id:
                 member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
                 if member.status not in ["member", "administrator", "creator"]:
                     all_joined = False
                     break
-            else:
-                link = ch.get("channel_link", "")
-                if not link:
-                    continue
+            elif link:
+                # fallback to username from link
                 chat_username = link.split("/")[-1]
-                if not chat_username:
-                    continue
-                member = await context.bot.get_chat_member(chat_id=f"@{chat_username}", user_id=user_id)
-                if member.status not in ["member", "administrator", "creator"]:
-                    all_joined = False
-                    break
+                if chat_username:
+                    member = await context.bot.get_chat_member(chat_id=f"@{chat_username}", user_id=user_id)
+                    if member.status not in ["member", "administrator", "creator"]:
+                        all_joined = False
+                        break
+            else:
+                logger.warning(f"Channel entry has no chat_id or channel_link: {ch}")
         except Exception as e:
             logger.error(f"Error checking channel {ch}: {e}")
             all_joined = False
             break
     return all_joined
-
+    
 async def is_user_verified(user_id: int) -> bool:
     if user_id in ADMIN_IDS:
         return True
@@ -632,30 +632,62 @@ async def track_channel_membership(update: Update, context: ContextTypes.DEFAULT
         if not chat_member:
             return
 
-        if not chat_member.chat or not chat_member.new_chat_member or not chat_member.old_chat_member:
+        # Verify chat object exists
+        if not chat_member.chat:
+            logger.debug("chat_member.chat is None")
             return
-
         chat_id = chat_member.chat.id
-        user = chat_member.new_chat_member.user
-        if not user:
-            return
-        user_id = user.id
-        old_status = chat_member.old_chat_member.status
-        new_status = chat_member.new_chat_member.status
 
+        # Verify new_chat_member object exists
+        if not chat_member.new_chat_member:
+            logger.debug("chat_member.new_chat_member is None")
+            return
+        new_member = chat_member.new_chat_member
+        if not new_member.user:
+            logger.debug("new_chat_member.user is None")
+            return
+        user_id = new_member.user.id
+
+        # Verify old_chat_member object exists
+        if not chat_member.old_chat_member:
+            logger.debug("chat_member.old_chat_member is None")
+            return
+        old_status = chat_member.old_chat_member.status
+        new_status = new_member.status
+
+        logger.info(f"=== CHAT MEMBER UPDATE ===")
+        logger.info(f"Chat: {chat_id} ({chat_member.chat.title})")
+        logger.info(f"User: {user_id} ({new_member.user.full_name})")
+        logger.info(f"Old status: {old_status}")
+        logger.info(f"New status: {new_status}")
+
+        # Get force‑join channel IDs
         channels = supabase.table("channels").select("chat_id").execute()
         if not channels.data:
             return
         channel_ids = [ch["chat_id"] for ch in channels.data if ch.get("chat_id")]
-        if not channel_ids or chat_id not in channel_ids:
+        if not channel_ids:
             return
 
+        if chat_id not in channel_ids:
+            return
+
+        # Detect leave
         if old_status in ["member", "administrator", "creator"] and new_status in ["left", "kicked"]:
-            logger.info(f"User {user_id} left channel {chat_id}")
+            logger.info(f"✅ User {user_id} LEFT channel {chat_id}")
+
+            # Get referrer
             user_data = supabase.table("users").select("referred_by").eq("user_id", user_id).execute().data
-            if user_data and user_data[0].get("referred_by"):
-                referrer_id = user_data[0]["referred_by"]
-                await deduct_referral_bonus(referrer_id, user_id, context.bot)
+            if not user_data:
+                logger.info(f"User {user_id} not in database")
+                return
+            referrer_id = user_data[0].get("referred_by")
+            if not referrer_id:
+                logger.info(f"User {user_id} has no referrer")
+                return
+
+            logger.info(f"User {user_id} referred by {referrer_id}, deducting point")
+            await deduct_referral_bonus(referrer_id, user_id, context.bot)
     except Exception as e:
         logger.error(f"Exception in track_channel_membership: {e}", exc_info=True)
 

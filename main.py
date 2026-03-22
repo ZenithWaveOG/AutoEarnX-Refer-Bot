@@ -161,11 +161,19 @@ async def show_force_join_message(update: Update, context: ContextTypes.DEFAULT_
     channels = supabase.table("channels").select("channel_link").execute()
     text = "<b>🚨 Force Join Required</b>\n\nPlease join the following channels first:\n"
     keyboard = []
+    row = []
     for ch in channels.data:
         link = ch["channel_link"]
         text += f"• {link}\n"
-        keyboard.append([InlineKeyboardButton("🔗 Join Channel", url=link)])
-    text += "\nAfter joining all, click the button below."
+        # Add a button for this channel
+        row.append(InlineKeyboardButton("🔗 Join", url=link))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    # Add any remaining single button
+    if row:
+        keyboard.append(row)
+    # Add the final verification button
     keyboard.append([InlineKeyboardButton("✅ I have joined all", callback_data="joined_all")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
